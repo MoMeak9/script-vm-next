@@ -1,0 +1,39 @@
+{
+  "name": "script-vm-next",
+  "version": "0.1.0",
+  "description": "Register-based JavaScript virtualization tool",
+  "type": "commonjs",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "bin": {
+    "script-vm-next": "dist/cli.js"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "dev": "ts-node src/cli.ts",
+    "test": "pnpm build && vitest run",
+    "test:watch": "vitest",
+    "lint": "eslint ./src --ext .ts"
+  },
+  "files": [
+    "dist"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "@babel/generator": "^7.25.6",
+    "@babel/parser": "^7.25.6",
+    "@babel/traverse": "^7.25.6",
+    "@babel/types": "^7.25.6",
+    "commander": "^13.1.0"
+  },
+  "devDependencies": {
+    "@types/babel__generator": "^7.6.8",
+    "@types/babel__traverse": "^7.20.6",
+    "@types/node": "^22.5.4",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.6.2",
+    "vitest": "^2.1.0"
+  }
+}
