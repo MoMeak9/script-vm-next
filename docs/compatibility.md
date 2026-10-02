@@ -70,7 +70,7 @@ Unlisted ES2016+ syntax and APIs are not part of a general compatibility promise
 
 `pnpm test` builds with TypeScript and runs Vitest. The [differential helper](../src/__tests__/differential.ts) runs synchronous source and generated code in fresh native VM contexts, captures structured-cloneable results, console observations, and exception names, and applies an execution deadline. It is a targeted regression tool: it does not compare every possible side effect or asynchronous scheduling behavior. Fixtures with uncloneable log values fail the harness rather than count as equivalent program errors. Module tests run separate Node processes with the native ESM loader to avoid Vitest's import transformations changing the reference behavior.
 
-The [CI workflow](../.github/workflows/ci.yml) defines checks on Node.js 20, 22, and 24 with pnpm 11.19.0, a frozen lockfile, and dependency lifecycle scripts disabled. A workflow definition is not evidence of a successful run: use the MR checks for the result on each Node version. Lint is excluded until its dependencies and configuration are supplied.
+The [CI workflow](../.github/workflows/ci.yml) defines checks on Node.js 20, 22, and 24 with pnpm 10.34.6, a frozen lockfile, and dependency lifecycle scripts disabled. pnpm 10 keeps the package manager compatible with the declared Node.js 20 minimum; pnpm 11 requires Node.js 22.13 or newer. A workflow definition is not evidence of a successful run: use the MR checks for the result on each Node version. Lint is excluded until its dependencies and configuration are supplied.
 
 Before claiming a broader compatibility level:
 

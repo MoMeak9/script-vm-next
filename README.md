@@ -29,7 +29,7 @@ Generated code uses host globals. Virtualization does not provide a security san
 
 ## Development and Validation
 
-Use Node.js 20 or newer and pnpm 11.19.0:
+Use Node.js 20 or newer and pnpm 10.34.6 (pnpm 11 requires Node.js 22.13 or newer):
 
 ```sh
 pnpm install --frozen-lockfile --ignore-scripts --registry https://registry.npmjs.org
