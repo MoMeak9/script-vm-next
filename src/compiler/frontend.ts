@@ -1,8 +1,12 @@
 import * as parser from '@babel/parser'
-import traverse from '@babel/traverse'
+import traverseModule from '@babel/traverse'
 import * as t from '@babel/types'
-import { detectModuleFormat } from './bundler'
-import type { ModuleFormat } from './types'
+
+// Babel publishes CommonJS. Native ESM and browser bundlers may expose its
+// callable default one level below the module's default export.
+const traverse: typeof traverseModule = typeof traverseModule === 'function'
+  ? traverseModule
+  : (traverseModule as unknown as { default: typeof traverseModule }).default
 
 const PARSER_PLUGINS: parser.ParserPlugin[] = [
   'classProperties',
@@ -15,7 +19,7 @@ const PARSER_PLUGINS: parser.ParserPlugin[] = [
   'dynamicImport',
 ]
 
-export function parseSource(source: string, sourceType: 'module' | 'script'): t.File {
+export function parseSource(source: string, sourceType: 'module' | 'script' | 'unambiguous'): t.File {
   return parser.parse(source, {
     sourceType,
     plugins: PARSER_PLUGINS,
@@ -734,7 +738,7 @@ function desugarPattern(
         const excludeChecks = restExcludes.map(k =>
           t.binaryExpression('!==', t.memberExpression(keysTmp, iTmp, true), t.stringLiteral(k))
         )
-        let condition: t.Expression = excludeChecks.length > 0
+        const condition: t.Expression = excludeChecks.length > 0
           ? (excludeChecks as t.Expression[]).reduce((a, b) => t.logicalExpression('&&', a, b))
           : t.booleanLiteral(true)
         statements.push(t.forStatement(
@@ -1914,11 +1918,4 @@ export function normalizeAst(file: t.File): t.File {
   })
 
   return file
-}
-
-export function resolveFormat(sourceFile: string, sourceCode: string, format?: string): ModuleFormat {
-  if (format && format !== 'auto') {
-    return format as ModuleFormat
-  }
-  return detectModuleFormat(sourceFile, sourceCode)
 }

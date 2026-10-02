@@ -1,0 +1,76 @@
+name: npm release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: npm-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  metadata:
+    name: Check release identity and license
+    runs-on: ubuntu-latest
+    outputs:
+      npm_tag: ${{ steps.metadata.outputs.npm_tag }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - id: metadata
+        name: Require a matching version tag and an approved license
+        run: |
+          node --input-type=module <<'NODE'
+          import { appendFileSync, existsSync, readFileSync } from 'node:fs';
+          const pkg = JSON.parse(readFileSync('package.json', 'utf8'));
+          if (process.env.GITHUB_REF_NAME !== `v${pkg.version}`) {
+            throw new Error('Release tag must exactly match v + package.json version.');
+          }
+          if (pkg.private || !pkg.license || pkg.license === 'UNLICENSED' || !existsSync('LICENSE')) {
+            throw new Error('A maintainer-approved license and LICENSE file are required before publishing.');
+          }
+          if (!/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(pkg.version)) {
+            throw new Error('Unsupported release version format.');
+          }
+          const npmTag = pkg.version.includes('-') ? 'beta' : 'latest';
+          appendFileSync(process.env.GITHUB_OUTPUT, `npm_tag=${npmTag}\n`);
+          NODE
+
+  validate:
+    needs: metadata
+    uses: ./.github/workflows/ci.yml
+
+  publish:
+    name: Publish verified tarball with npm provenance
+    needs: [metadata, validate]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: npm
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Install npm with Trusted Publishing support
+        run: npm install --global npm@11.5.1 --ignore-scripts --registry=https://registry.npmjs.org
+      - uses: actions/download-artifact@v4
+        with:
+          name: verified-npm-package
+          path: artifacts
+      - name: Publish
+        env:
+          NPM_DIST_TAG: ${{ needs.metadata.outputs.npm_tag }}
+        run: |
+          tarballs=(artifacts/*.tgz)
+          if [ "${#tarballs[@]}" -ne 1 ] || [ ! -f "${tarballs[0]}" ]; then
+            echo 'Expected exactly one verified npm tarball.' >&2
+            exit 1
+          fi
+          npm publish "${tarballs[0]}" --access public --provenance --ignore-scripts --tag "$NPM_DIST_TAG" --registry=https://registry.npmjs.org

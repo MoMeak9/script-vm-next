@@ -4,19 +4,20 @@ on:
   push:
     branches: [main]
   pull_request:
+  workflow_call:
 
 permissions:
   contents: read
 
 jobs:
-  test:
+  core:
     name: Node.js ${{ matrix.node }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
-        node: [20, 22, 24]
+        node: [20, 22]
     env:
       npm_config_registry: https://registry.npmjs.org
       pnpm_config_verify_deps_before_run: 'false'
@@ -35,3 +36,60 @@ jobs:
         run: pnpm install --frozen-lockfile --ignore-scripts --registry=https://registry.npmjs.org
       - name: Build and test
         run: pnpm test
+
+  package-and-browser:
+    name: Node.js 24 / package and browser
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      npm_config_registry: https://registry.npmjs.org
+      pnpm_config_verify_deps_before_run: 'false'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.34.6
+          run_install: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+          registry-url: https://registry.npmjs.org
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile --ignore-scripts --registry=https://registry.npmjs.org
+      - name: Build library
+        run: pnpm build
+      - name: Lint and type check
+        run: |
+          pnpm lint
+          pnpm typecheck
+      - name: Test compiler
+        run: pnpm test:unit
+      - name: Verify packed npm package in independent consumers
+        run: pnpm test:package
+      - name: Install Chromium
+        run: pnpm exec playwright install --with-deps chromium
+      - name: Build and test playground
+        run: pnpm test:e2e
+      - name: Save verified npm tarball
+        uses: actions/upload-artifact@v4
+        with:
+          name: verified-npm-package
+          path: artifacts/*.tgz
+          if-no-files-found: error
+          retention-days: 7
+      - name: Save verified playground
+        uses: actions/upload-artifact@v4
+        with:
+          name: verified-playground
+          path: demo-dist/
+          if-no-files-found: error
+          retention-days: 7
+      - name: Save browser failure evidence
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-failures
+          path: artifacts/playwright/
+          if-no-files-found: ignore
+          retention-days: 7

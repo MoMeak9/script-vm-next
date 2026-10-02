@@ -1,27 +1,44 @@
 #!/usr/bin/env node
 
 import { Command } from 'commander'
-import compile, { resolveFormat } from './compiler'
-import { readFileSync } from 'node:fs'
+import compile from './compiler'
+import { CompileError } from './compiler/diagnostics'
 import { resolve } from 'node:path'
+import { VERSION } from './version'
 
 const program = new Command()
 
-program.name('script-vm-next').description('Register-based JS VM compiler').version('0.1.0')
+program.name('script-vm-next').description('Register-based JS VM compiler').version(VERSION)
 
-function runCompile(input: string, options: any) {
-  const resolvedOptions = typeof options?.opts === 'function' ? options.opts() : options
+interface CliOptions {
+  output?: string
+  format?: string
+  bundle?: boolean
+  external?: string
+  debug?: boolean
+}
+
+function runCompile(input: string, options: CliOptions) {
   const inputPath = resolve(process.cwd(), input)
-  const outputPath = resolvedOptions.output ? resolve(process.cwd(), resolvedOptions.output) : undefined
-  const source = readFileSync(inputPath, 'utf-8')
-  const resolvedFormat = resolveFormat(inputPath, source, resolvedOptions.format)
-
-  compile(inputPath, outputPath, {
-    format: resolvedFormat,
-    bundle: resolvedOptions.bundle,
-    external: resolvedOptions.external ? resolvedOptions.external.split(',').map((item: string) => item.trim()) : undefined,
-    debug: Boolean(resolvedOptions.debug),
-  })
+  const outputPath = options.output ? resolve(process.cwd(), options.output) : undefined
+  try {
+    compile(inputPath, outputPath, {
+      format: options.format as 'auto' | 'iife' | 'esm' | 'cjs',
+      bundle: options.bundle,
+      external: options.external?.split(',').map(item => item.trim()).filter(Boolean),
+      debug: Boolean(options.debug),
+    })
+  } catch (error) {
+    if (error instanceof CompileError) {
+      const location = error.filename
+        ? `${error.filename}${error.line === undefined ? '' : `:${error.line}:${error.column ?? 1}`}: `
+        : ''
+      process.stderr.write(`${location}${error.code}: ${error.message}\n`)
+    } else {
+      process.stderr.write(`Compilation failed: ${error instanceof Error ? error.message : String(error)}\n`)
+    }
+    process.exitCode = 1
+  }
 }
 
 const registerCommand = (command: Command) =>

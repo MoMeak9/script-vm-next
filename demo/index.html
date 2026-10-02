@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#f4f6fb" />
+    <meta name="description" content="在浏览器中体验 script-vm-next：将 JavaScript 编译为字节码，查看产物并运行示例。" />
+    <title>script-vm-next · JavaScript Playground</title>
+  </head>
+  <body>
+    <div class="page-shell">
+      <header class="site-header">
+        <a class="brand" href="./" aria-label="script-vm-next 首页"><span class="brand-mark" aria-hidden="true">vm<span></span></span><span>script-vm<span class="brand-next">-next</span></span></a>
+        <nav aria-label="项目链接">
+          <a href="https://github.com/MoMeak9/script-vm-next/blob/main/docs/compatibility.md" target="_blank" rel="noopener noreferrer">兼容性说明 <span aria-hidden="true">↗</span></a>
+          <a class="github-link" href="https://github.com/MoMeak9/script-vm-next" target="_blank" rel="noopener noreferrer">GitHub <span aria-hidden="true">↗</span></a>
+        </nav>
+      </header>
+
+      <main>
+        <section class="hero" aria-labelledby="page-title">
+          <div>
+            <div class="eyebrow"><span class="live-dot" aria-hidden="true"></span> JAVASCRIPT VIRTUALIZATION / PLAYGROUND</div>
+            <h1 id="page-title">代码，换一种运行方式<span>。</span></h1>
+            <p class="hero-description">把 JavaScript 编译成字节码，交给轻量虚拟机执行。<br class="desktop-break" />在这里修改、编译、观察结果，所有计算都在你的浏览器里完成。</p>
+          </div>
+          <div class="pipeline" aria-label="编译流程：JavaScript 到字节码，再由虚拟机执行">
+            <div class="pipeline-step"><span class="pipeline-icon">{ }</span><span>JavaScript</span><small>你的源码</small></div>
+            <span class="pipeline-arrow" aria-hidden="true">→</span>
+            <div class="pipeline-step"><span class="pipeline-icon bytecode-icon">01</span><span>Bytecode</span><small>寄存器字节码</small></div>
+            <span class="pipeline-arrow" aria-hidden="true">→</span>
+            <div class="pipeline-step"><span class="pipeline-icon vm-icon">▷</span><span>VM runtime</span><small>自包含执行产物</small></div>
+          </div>
+        </section>
+
+        <section class="studio" aria-label="JavaScript 编译工作台">
+          <div class="toolbar">
+            <div class="example-control"><label for="example-select">探索示例</label><select id="example-select" aria-label="选择代码示例"></select></div>
+            <div class="toolbar-actions">
+              <button id="reset-button" class="button button-quiet" type="button" title="重置为当前示例">重置</button>
+              <span class="toolbar-divider" aria-hidden="true"></span>
+              <button id="compile-button" class="button button-secondary" type="button"><span aria-hidden="true">⌘</span> 编译 <kbd>⌘/Ctrl ↵</kbd></button>
+              <button id="run-button" class="button button-primary" type="button" disabled><span aria-hidden="true">▶</span> 运行产物</button>
+              <button id="stop-button" class="button button-stop" type="button" disabled><span aria-hidden="true">■</span> 停止</button>
+            </div>
+          </div>
+
+          <div id="example-description" class="example-description"></div>
+          <div id="error-panel" class="error-panel" role="alert" hidden><span class="error-icon" aria-hidden="true">!</span><div><strong id="error-title">编译失败</strong><p id="error-message"></p></div><button id="error-location" class="button button-error-location" type="button" hidden>定位源码</button></div>
+
+          <div class="editor-grid">
+            <section class="editor-panel source-panel" aria-labelledby="source-heading">
+              <div class="panel-heading"><div><span class="file-dot source-dot" aria-hidden="true"></span><h2 id="source-heading">源码</h2><span class="file-name">example.js</span></div><span class="language-tag">JAVASCRIPT</span></div>
+              <div id="source-editor" class="editor-host"></div>
+              <div class="editor-caption"><span>可编辑 · 单文件 JavaScript</span><span id="source-size">0 B</span></div>
+            </section>
+            <section class="editor-panel output-panel" aria-labelledby="output-heading">
+              <div class="panel-heading"><div><span class="file-dot output-dot" aria-hidden="true"></span><h2 id="output-heading">编译产物</h2><span class="file-name">example.vm.js</span></div><div class="output-actions"><button id="copy-button" class="icon-button" type="button" disabled aria-label="复制编译产物" title="复制编译产物"><svg viewBox="0 0 20 20" fill="none" aria-hidden="true"><rect x="7" y="7" width="9" height="10" rx="2"/><path d="M12 7V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v6a2 2 0 0 0 2 2h2"/></svg></button><button id="download-button" class="icon-button" type="button" disabled aria-label="下载编译产物" title="下载编译产物"><svg viewBox="0 0 20 20" fill="none" aria-hidden="true"><path d="M10 3v9m-4-4 4 4 4-4M4 13v3a1 1 0 0 0 1 1h10a1 1 0 0 0 1-1v-3"/></svg></button></div></div>
+              <div id="output-editor" class="editor-host"></div>
+              <div class="editor-caption"><span>只读 · 自包含 IIFE</span><span id="output-caption">等待编译</span></div>
+            </section>
+          </div>
+
+          <div class="metrics" aria-label="编译统计">
+            <div class="metric"><span class="metric-icon" aria-hidden="true">◷</span><div><span class="metric-label">编译耗时</span><span class="metric-value" id="metric-duration">—</span></div></div>
+            <div class="metric"><span class="metric-icon" aria-hidden="true">⌁</span><div><span class="metric-label">产物大小</span><span class="metric-value" id="metric-size">—</span></div></div>
+            <div class="metric"><span class="metric-icon" aria-hidden="true">▥</span><div><span class="metric-label">字节码长度 <span class="metric-unit">/ words</span></span><span class="metric-value" id="metric-bytecode">—</span></div></div>
+            <div class="metric"><span class="metric-icon" aria-hidden="true">ƒ</span><div><span class="metric-label">函数数量</span><span class="metric-value" id="metric-functions">—</span></div></div>
+          </div>
+        </section>
+
+        <section class="console-panel" aria-labelledby="console-heading">
+          <div class="console-heading"><div><span class="terminal-mark" aria-hidden="true">›_</span><h2 id="console-heading">运行输出</h2><span id="console-count" class="console-count">0</span></div><div><span id="run-status" class="status-badge" role="status"><span class="status-dot" aria-hidden="true"></span><span id="run-status-text">尚未运行</span></span><button id="clear-console" class="console-clear" type="button">清空</button></div></div>
+          <div id="console-output" class="console-output" role="log" aria-label="程序运行日志" aria-live="polite" aria-relevant="additions"><p id="console-empty" class="console-empty"><span aria-hidden="true">↳</span> 点击「运行产物」，在这里查看 console 输出。代码不会自动执行。</p></div>
+        </section>
+
+        <div class="workspace-note"><p><span aria-hidden="true">ⓘ</span> 单文件演示环境，支持范围见兼容性说明。运行于隔离 Worker，禁用网络与 DOM，超时自动停止；仅运行你信任的代码。</p><span id="app-status" role="status">正在准备编译器…</span></div>
+
+        <section class="install-strip" aria-label="预发布状态"><div><span class="install-label">BRING IT TO YOUR PROJECT</span><p id="release-status">预发布准备中 · v0.2.0-beta.1</p></div><a class="source-link" href="https://github.com/MoMeak9/script-vm-next" target="_blank" rel="noopener noreferrer">查看源码与接入说明 <span aria-hidden="true">↗</span></a></section>
+      </main>
+
+      <footer class="site-footer"><span>script-vm-next <span id="version-label"></span><span class="footer-dot">·</span><span id="commit-label"></span></span><span>Built for curiosity. Compiled in your browser.</span></footer>
+      <div id="toast" class="toast" role="status" hidden></div>
+    </div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
