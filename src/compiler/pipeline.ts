@@ -33,6 +33,8 @@ export default function compile(
 
   let codeToCompile = sourceCode
   let exportNames: string[] = []
+  let notifyIdentifier: string | undefined
+  let exportsIdentifier: string | undefined
   const shouldBundle = options.bundle !== false
 
   if (shouldBundle) {
@@ -44,6 +46,8 @@ export default function compile(
       })
       codeToCompile = bundled.code
       exportNames = bundled.entryExports
+      notifyIdentifier = bundled.notifyIdentifier
+      exportsIdentifier = bundled.exportsIdentifier
     } else if (format === 'cjs' && hasCJSSyntax(sourceCode)) {
       const bundled = bundle(sourceFile, {
         external: options.external,
@@ -52,14 +56,17 @@ export default function compile(
       })
       codeToCompile = bundled.code
       exportNames = bundled.entryExports
+      notifyIdentifier = bundled.notifyIdentifier
+      exportsIdentifier = bundled.exportsIdentifier
     }
   }
 
   const sourceType = format === 'esm' ? 'module' : 'script'
   const file = normalizeAst(parseSource(codeToCompile, sourceType))
-  const lowered = lowerToIR(file)
+  const lowered = lowerToIR(file, exportsIdentifier)
   const allocated = allocateRegisters(lowered)
   const artifact = emitBytecode(allocated, format, exportNames, Boolean(options.debug))
+  if (notifyIdentifier) artifact.notifyIdentifier = notifyIdentifier
   const code = packArtifact(artifact)
 
   if (typeof outputFile === 'string') {

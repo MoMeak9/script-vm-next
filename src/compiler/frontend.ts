@@ -89,8 +89,41 @@ interface PrivateDescriptor {
   setterId?: t.Identifier
 }
 
+// Reserved names are injected after parsing and cannot be declared by source
+// code. LOAD_GLOBAL resolves them to VM-private host intrinsics, so class
+// helpers do not accidentally capture a user's Object/WeakMap/etc. binding.
+function classIntrinsic(name: 'Object' | 'WeakMap' | 'WeakSet' | 'TypeError'): t.Identifier {
+  return t.identifier(`@script-vm/intrinsic/${name}`)
+}
+
+function createPrivateReferenceHelper(kind: 'Field' | 'Accessor'): t.FunctionDeclaration {
+  const field = kind === 'Field'
+  const args = field ? ['map', 'receiver'] : ['receiver', 'brand', 'getter', 'setter']
+  const getArgs = field ? ['map', 'receiver'] : ['receiver', 'brand', 'getter']
+  const setArgs = field ? ['map', 'receiver', 'value'] : ['receiver', 'brand', 'setter', 'value']
+  return t.functionDeclaration(
+    t.identifier(`__private${kind}Ref`),
+    args.map(name => t.identifier(name)),
+    t.blockStatement([
+      t.returnStatement(t.callExpression(
+        t.memberExpression(classIntrinsic('Object'), t.identifier('defineProperty')),
+        [t.objectExpression([]), t.stringLiteral('value'), t.objectExpression([
+          t.objectProperty(t.identifier('get'), t.functionExpression(null, [], t.blockStatement([
+            t.returnStatement(t.callExpression(t.identifier(`__private${kind}Get`), getArgs.map(name => t.identifier(name)))),
+          ]))),
+          t.objectProperty(t.identifier('set'), t.functionExpression(null, [t.identifier('value')], t.blockStatement([
+            t.expressionStatement(t.callExpression(t.identifier(`__private${kind}Set`), setArgs.map(name => t.identifier(name)))),
+          ]))),
+        ])]
+      )),
+    ])
+  )
+}
+
 function createPrivateHelpers(): t.Statement[] {
   return [
+    createPrivateReferenceHelper('Field'),
+    createPrivateReferenceHelper('Accessor'),
     t.functionDeclaration(
       t.identifier('__privateFieldGet'),
       [t.identifier('map'), t.identifier('receiver')],
@@ -102,7 +135,7 @@ function createPrivateHelpers(): t.Statement[] {
           )),
           t.blockStatement([
             t.throwStatement(
-              t.newExpression(t.identifier('TypeError'), [t.stringLiteral('Cannot read private member from an object whose class did not declare it')])
+              t.newExpression(classIntrinsic('TypeError'), [t.stringLiteral('Cannot read private member from an object whose class did not declare it')])
             ),
           ])
         ),
@@ -122,7 +155,7 @@ function createPrivateHelpers(): t.Statement[] {
           )),
           t.blockStatement([
             t.throwStatement(
-              t.newExpression(t.identifier('TypeError'), [t.stringLiteral('Cannot write private member to an object whose class did not declare it')])
+              t.newExpression(classIntrinsic('TypeError'), [t.stringLiteral('Cannot write private member to an object whose class did not declare it')])
             ),
           ])
         ),
@@ -146,7 +179,7 @@ function createPrivateHelpers(): t.Statement[] {
           ),
           t.blockStatement([
             t.throwStatement(
-              t.newExpression(t.identifier('TypeError'), [t.stringLiteral('Cannot initialize the same private elements twice on an object')])
+              t.newExpression(classIntrinsic('TypeError'), [t.stringLiteral('Cannot initialize the same private elements twice on an object')])
             ),
           ])
         ),
@@ -170,7 +203,7 @@ function createPrivateHelpers(): t.Statement[] {
           )),
           t.blockStatement([
             t.throwStatement(
-              t.newExpression(t.identifier('TypeError'), [t.stringLiteral('Cannot access private method on an object whose class did not declare it')])
+              t.newExpression(classIntrinsic('TypeError'), [t.stringLiteral('Cannot access private method on an object whose class did not declare it')])
             ),
           ])
         ),
@@ -195,7 +228,7 @@ function createPrivateHelpers(): t.Statement[] {
           ),
           t.blockStatement([
             t.throwStatement(
-              t.newExpression(t.identifier('TypeError'), [t.stringLiteral('Cannot access private accessor on an object whose class did not declare it')])
+              t.newExpression(classIntrinsic('TypeError'), [t.stringLiteral('Cannot access private accessor on an object whose class did not declare it')])
             ),
           ])
         ),
@@ -225,7 +258,7 @@ function createPrivateHelpers(): t.Statement[] {
           ),
           t.blockStatement([
             t.throwStatement(
-              t.newExpression(t.identifier('TypeError'), [t.stringLiteral('Cannot access private accessor on an object whose class did not declare it')])
+              t.newExpression(classIntrinsic('TypeError'), [t.stringLiteral('Cannot access private accessor on an object whose class did not declare it')])
             ),
           ])
         ),
@@ -241,270 +274,103 @@ function createPrivateHelpers(): t.Statement[] {
   ]
 }
 
-function transformPrivateReferences(targetNode: t.Node, descriptors: Map<string, PrivateDescriptor>, classId: t.Identifier) {
-  const ast = t.file(t.program([t.expressionStatement(t.numericLiteral(0))]))
-  ;(ast.program.body[0] as t.ExpressionStatement).expression = targetNode as t.Expression
+// Keep assignment/update nodes intact so ordinary lowering owns operator semantics.
+// The reference helpers capture the receiver once and defer brand/accessor checks
+// until GetValue/PutValue, including after the RHS for a simple assignment.
+function privateWriteReference(descriptor: PrivateDescriptor, receiver: t.Expression): t.MemberExpression {
+  const reference = descriptor.kind === 'accessor'
+    ? t.callExpression(t.identifier('__privateAccessorRef'), [
+        receiver,
+        descriptor.brandId!,
+        descriptor.getterId ?? t.unaryExpression('void', t.numericLiteral(0)),
+        descriptor.setterId ?? t.unaryExpression('void', t.numericLiteral(0)),
+      ])
+    : t.callExpression(t.identifier('__privateFieldRef'), [descriptor.storageId, receiver])
+  return t.memberExpression(reference, t.identifier('value'))
+}
 
+function transformPrivateAst(ast: t.File, descriptors: Map<string, PrivateDescriptor>) {
   traverse(ast, {
     UpdateExpression(path) {
-      if (!t.isMemberExpression(path.node.argument) || !t.isPrivateName(path.node.argument.property)) return
-      const descriptor = descriptors.get(path.node.argument.property.id.name)
-      if (!descriptor || descriptor.kind !== 'field') return
-      const op = path.node.operator === '++' ? '+' : '-' as '+' | '-'
-      path.replaceWith(
-        t.assignmentExpression(
-          '=',
-          t.cloneNode(path.node.argument),
-          t.binaryExpression(op, t.cloneNode(path.node.argument), t.numericLiteral(1))
-        )
-      )
+      const argument = path.node.argument
+      if (!t.isMemberExpression(argument) || !t.isPrivateName(argument.property)) return
+      const descriptor = descriptors.get(argument.property.id.name)
+      if (!descriptor || descriptor.kind === 'method') return
+      path.node.argument = privateWriteReference(descriptor, argument.object as t.Expression)
     },
-    CallExpression(path) {
-      const callee = path.node.callee
-      if (!t.isMemberExpression(callee) || !t.isPrivateName(callee.property)) {
-        return
-      }
-      const descriptor = descriptors.get(callee.property.id.name)
-      if (!descriptor || descriptor.kind !== 'method') {
-        return
-      }
-
-      const receiver = callee.object as t.Expression
-      if (descriptor.static) {
-        const args = path.node.arguments.map((arg) =>
-          t.isExpression(arg) ? transformPrivateReferences(t.cloneNode(arg, true), descriptors, classId) as t.Expression : arg
-        )
-        path.replaceWith(
-          t.callExpression(
-            t.memberExpression(descriptor.storageId, t.identifier('call')),
-            [receiver, ...args]
-          )
-        )
-      } else {
-        const args = path.node.arguments.map((arg) =>
-          t.isExpression(arg) ? transformPrivateReferences(t.cloneNode(arg, true), descriptors, classId) as t.Expression : arg
-        )
+    AssignmentExpression(path) {
+      const left = path.node.left
+      if (!t.isMemberExpression(left) || !t.isPrivateName(left.property)) return
+      const descriptor = descriptors.get(left.property.id.name)
+      if (!descriptor || descriptor.kind === 'method') return
+      path.node.left = privateWriteReference(descriptor, left.object as t.Expression)
+    },
+    CallExpression: {
+      exit(path) {
+        const callee = path.node.callee
+        if (!t.isMemberExpression(callee) || !t.isPrivateName(callee.property)) return
+        const descriptor = descriptors.get(callee.property.id.name)
+        if (!descriptor || descriptor.kind !== 'method') return
+        const receiver = callee.object as t.Expression
         path.replaceWith(
           t.callExpression(
             t.memberExpression(
-              t.callExpression(
-                t.identifier('__privateMethod'),
-                [receiver, descriptor.brandId!, descriptor.implId!]
-              ),
+              descriptor.static
+                ? descriptor.storageId
+                : t.callExpression(t.identifier('__privateMethod'), [receiver, descriptor.brandId!, descriptor.implId!]),
               t.identifier('call')
             ),
-            [receiver, ...args]
+            [t.cloneNode(receiver, true), ...path.node.arguments]
           )
         )
-      }
-      path.skip()
+        path.skip()
+      },
     },
-    AssignmentExpression(path) {
-      if (!t.isMemberExpression(path.node.left) || !t.isPrivateName(path.node.left.property)) {
-        return
-      }
-      const descriptor = descriptors.get(path.node.left.property.id.name)
-      if (!descriptor) {
-        return
-      }
-      const receiver = path.node.left.object as t.Expression
-      const value = transformPrivateReferences(t.cloneNode(path.node.right, true), descriptors, classId) as t.Expression
-      if (descriptor.kind === 'accessor') {
-        if (!descriptor.setterId) {
-          throw new Error(`Private accessor #${descriptor.name} has no setter`)
-        }
-        path.replaceWith(
-          t.callExpression(
-            t.identifier('__privateAccessorSet'),
-            [receiver, descriptor.static ? t.nullLiteral() : descriptor.brandId!, descriptor.setterId, value]
-          )
-        )
-      } else if (descriptor.kind === 'field') {
-        path.replaceWith(
-          descriptor.static
-            ? t.assignmentExpression('=', descriptor.storageId, value)
-            : t.callExpression(t.identifier('__privateFieldSet'), [descriptor.storageId, receiver, value])
-        )
-      }
-      path.skip()
-    },
-    MemberExpression(path) {
-      if (!t.isPrivateName(path.node.property)) {
-        return
-      }
-      if (
-        path.parentPath.isCallExpression({ callee: path.node }) ||
-        (path.parentPath.isAssignmentExpression() && path.parentPath.node.left === path.node)
-      ) {
-        return
-      }
-
-      const descriptor = descriptors.get(path.node.property.id.name)
-      if (!descriptor) {
-        return
-      }
-
-      const receiver = path.node.object as t.Expression
-      if (descriptor.kind === 'accessor') {
-        if (!descriptor.getterId) {
-          throw new Error(`Private accessor #${descriptor.name} has no getter`)
-        }
-        path.replaceWith(
-          t.callExpression(
-            t.identifier('__privateAccessorGet'),
-            [receiver, descriptor.static ? t.nullLiteral() : descriptor.brandId!, descriptor.getterId]
-          )
-        )
-      } else if (descriptor.kind === 'field') {
-        path.replaceWith(
-          descriptor.static
-            ? descriptor.storageId
-            : t.callExpression(t.identifier('__privateFieldGet'), [descriptor.storageId, receiver])
-        )
-      } else {
-        path.replaceWith(
-          descriptor.static
-            ? descriptor.storageId
-            : t.callExpression(
-                t.memberExpression(
-                  t.callExpression(
-                    t.identifier('__privateMethod'),
-                    [receiver, descriptor.brandId!, descriptor.implId!]
+    MemberExpression: {
+      exit(path) {
+        if (!t.isPrivateName(path.node.property)) return
+        if (path.parentPath.isCallExpression({ callee: path.node })) return
+        const descriptor = descriptors.get(path.node.property.id.name)
+        if (!descriptor) return
+        const receiver = path.node.object as t.Expression
+        if (descriptor.kind === 'accessor') {
+          path.replaceWith(t.callExpression(t.identifier('__privateAccessorGet'), [
+            receiver,
+            descriptor.brandId!,
+            descriptor.getterId ?? t.unaryExpression('void', t.numericLiteral(0)),
+          ]))
+        } else if (descriptor.kind === 'field') {
+          path.replaceWith(t.callExpression(t.identifier('__privateFieldGet'), [descriptor.storageId, receiver]))
+        } else {
+          path.replaceWith(
+            descriptor.static
+              ? descriptor.storageId
+              : t.callExpression(
+                  t.memberExpression(
+                    t.callExpression(t.identifier('__privateMethod'), [receiver, descriptor.brandId!, descriptor.implId!]),
+                    t.identifier('bind')
                   ),
-                  t.identifier('bind')
-                ),
-                [receiver]
-              )
-        )
-      }
-      path.skip()
+                  [t.cloneNode(receiver, true)]
+                )
+          )
+        }
+        path.skip()
+      },
     },
   })
+}
 
+function transformPrivateReferences(targetNode: t.Node, descriptors: Map<string, PrivateDescriptor>, _classId: t.Identifier) {
+  const ast = t.file(t.program([t.expressionStatement(targetNode as t.Expression)]))
+  transformPrivateAst(ast, descriptors)
   return (ast.program.body[0] as t.ExpressionStatement).expression
 }
 
-function transformPrivateBody(bodyStatements: t.Statement[], descriptors: Map<string, PrivateDescriptor>, classId: t.Identifier) {
-  const ast = t.file(
-    t.program([
-      t.functionDeclaration(t.identifier('_tmp_private'), [], t.blockStatement(bodyStatements)),
-    ])
-  )
-  traverse(ast, {
-    UpdateExpression(path) {
-      if (!t.isMemberExpression(path.node.argument) || !t.isPrivateName(path.node.argument.property)) return
-      const descriptor = descriptors.get(path.node.argument.property.id.name)
-      if (!descriptor || descriptor.kind !== 'field') return
-      const op = path.node.operator === '++' ? '+' : '-' as '+' | '-'
-      path.replaceWith(
-        t.assignmentExpression(
-          '=',
-          t.cloneNode(path.node.argument),
-          t.binaryExpression(op, t.cloneNode(path.node.argument), t.numericLiteral(1))
-        )
-      )
-    },
-    CallExpression(path) {
-      const callee = path.node.callee
-      if (!t.isMemberExpression(callee) || !t.isPrivateName(callee.property)) return
-      const descriptor = descriptors.get(callee.property.id.name)
-      if (!descriptor || descriptor.kind !== 'method') return
-      const receiver = callee.object as t.Expression
-      if (descriptor.static) {
-        const args = path.node.arguments.map((arg) =>
-          t.isExpression(arg) ? transformPrivateReferences(t.cloneNode(arg, true), descriptors, classId) as t.Expression : arg
-        )
-        path.replaceWith(
-          t.callExpression(
-            t.memberExpression(descriptor.storageId, t.identifier('call')),
-            [receiver, ...args]
-          )
-        )
-      } else {
-        const args = path.node.arguments.map((arg) =>
-          t.isExpression(arg) ? transformPrivateReferences(t.cloneNode(arg, true), descriptors, classId) as t.Expression : arg
-        )
-        path.replaceWith(
-          t.callExpression(
-            t.memberExpression(
-              t.callExpression(t.identifier('__privateMethod'), [receiver, descriptor.brandId!, descriptor.implId!]),
-              t.identifier('call')
-            ),
-            [receiver, ...args]
-          )
-        )
-      }
-      path.skip()
-    },
-    AssignmentExpression(path) {
-      if (!t.isMemberExpression(path.node.left) || !t.isPrivateName(path.node.left.property)) return
-      const descriptor = descriptors.get(path.node.left.property.id.name)
-      if (!descriptor) return
-      const receiver = path.node.left.object as t.Expression
-      const value = transformPrivateReferences(t.cloneNode(path.node.right, true), descriptors, classId) as t.Expression
-      if (descriptor.kind === 'accessor') {
-        if (!descriptor.setterId) {
-          throw new Error(`Private accessor #${descriptor.name} has no setter`)
-        }
-        path.replaceWith(
-          t.callExpression(
-            t.identifier('__privateAccessorSet'),
-            [receiver, descriptor.static ? t.nullLiteral() : descriptor.brandId!, descriptor.setterId, value]
-          )
-        )
-      } else if (descriptor.kind === 'field') {
-        path.replaceWith(
-          descriptor.static
-            ? t.assignmentExpression('=', descriptor.storageId, value)
-            : t.callExpression(t.identifier('__privateFieldSet'), [descriptor.storageId, receiver, value])
-        )
-      }
-      path.skip()
-    },
-    MemberExpression(path) {
-      if (!t.isPrivateName(path.node.property)) return
-      if (
-        path.parentPath.isCallExpression({ callee: path.node }) ||
-        (path.parentPath.isAssignmentExpression() && path.parentPath.node.left === path.node)
-      ) {
-        return
-      }
-      const descriptor = descriptors.get(path.node.property.id.name)
-      if (!descriptor) return
-      const receiver = path.node.object as t.Expression
-      if (descriptor.kind === 'accessor') {
-        if (!descriptor.getterId) {
-          throw new Error(`Private accessor #${descriptor.name} has no getter`)
-        }
-        path.replaceWith(
-          t.callExpression(
-            t.identifier('__privateAccessorGet'),
-            [receiver, descriptor.static ? t.nullLiteral() : descriptor.brandId!, descriptor.getterId]
-          )
-        )
-      } else if (descriptor.kind === 'field') {
-        path.replaceWith(
-          descriptor.static
-            ? descriptor.storageId
-            : t.callExpression(t.identifier('__privateFieldGet'), [descriptor.storageId, receiver])
-        )
-      } else {
-        path.replaceWith(
-          descriptor.static
-            ? descriptor.storageId
-            : t.callExpression(
-                t.memberExpression(
-                  t.callExpression(t.identifier('__privateMethod'), [receiver, descriptor.brandId!, descriptor.implId!]),
-                  t.identifier('bind')
-                ),
-                [receiver]
-              )
-        )
-      }
-      path.skip()
-    },
-  })
-
+function transformPrivateBody(bodyStatements: t.Statement[], descriptors: Map<string, PrivateDescriptor>, _classId: t.Identifier) {
+  const ast = t.file(t.program([
+    t.functionDeclaration(t.identifier('_tmp_private'), [], t.blockStatement(bodyStatements)),
+  ]))
+  transformPrivateAst(ast, descriptors)
   const transformed = [...(ast.program.body[0] as t.FunctionDeclaration).body.body]
   bodyStatements.length = 0
   bodyStatements.push(...transformed)
@@ -530,25 +396,23 @@ function buildClassIife(node: t.ClassDeclaration | t.ClassExpression, classId: t
         // Private accessor: get #x() / set #x()
         let descriptor = privateDescriptors.get(name)
         if (!descriptor) {
-          const brandId = member.static ? undefined : t.identifier(`_${classId.name}_${name}_brand`)
+          const brandId = t.identifier(`_${classId.name}_${name}_brand`)
           descriptor = {
             name,
             static: member.static,
             kind: 'accessor',
-            storageId: brandId ?? t.identifier(`_${classId.name}_${name}_storage`),
+            storageId: brandId,
             brandId,
           }
           privateDescriptors.set(name, descriptor)
-          if (!member.static) {
-            helperStatements.push(
-              t.variableDeclaration('var', [t.variableDeclarator(brandId!, t.newExpression(t.identifier('WeakSet'), []))])
-            )
-            methodInitializers.push(
-              t.expressionStatement(
-                t.callExpression(t.memberExpression(brandId!, t.identifier('add')), [t.thisExpression()])
-              )
-            )
-          }
+          helperStatements.push(
+            t.variableDeclaration('var', [t.variableDeclarator(brandId, t.newExpression(classIntrinsic('WeakSet'), []))])
+          )
+          const initializeBrand = t.expressionStatement(
+            t.callExpression(t.memberExpression(brandId, t.identifier('add')), [member.static ? classId : t.thisExpression()])
+          )
+          if (member.static) helperStatements.push(initializeBrand)
+          else methodInitializers.push(initializeBrand)
         }
 
         const accessorImplId = t.identifier(`_${classId.name}_${member.kind}_${name}`)
@@ -558,12 +422,6 @@ function buildClassIife(node: t.ClassDeclaration | t.ClassExpression, classId: t
           descriptor.setterId = accessorImplId
         }
 
-        const methodBody = t.cloneNode(member.body, true)
-        transformPrivateBody(methodBody.body, privateDescriptors, classId)
-        const fn = t.functionExpression(null, member.params as t.Identifier[], methodBody, member.generator, member.async)
-        helperStatements.push(
-          t.variableDeclaration('var', [t.variableDeclarator(accessorImplId, fn)])
-        )
         continue
       }
       const implId = t.identifier(`_${classId.name}_${name}_impl`)
@@ -585,7 +443,7 @@ function buildClassIife(node: t.ClassDeclaration | t.ClassExpression, classId: t
           implId,
         })
         helperStatements.push(
-          t.variableDeclaration('var', [t.variableDeclarator(brandId, t.newExpression(t.identifier('WeakSet'), []))])
+          t.variableDeclaration('var', [t.variableDeclarator(brandId, t.newExpression(classIntrinsic('WeakSet'), []))])
         )
         methodInitializers.push(
           t.expressionStatement(
@@ -594,12 +452,6 @@ function buildClassIife(node: t.ClassDeclaration | t.ClassExpression, classId: t
         )
       }
 
-      const methodBody = t.cloneNode(member.body, true)
-      transformPrivateBody(methodBody.body, privateDescriptors, classId)
-      const fn = t.functionExpression(null, member.params as t.Identifier[], methodBody, member.generator, member.async)
-      helperStatements.push(
-        t.variableDeclaration('var', [t.variableDeclarator(implId, fn)])
-      )
       continue
     }
 
@@ -613,16 +465,26 @@ function buildClassIife(node: t.ClassDeclaration | t.ClassExpression, classId: t
         storageId,
       })
 
-      if (member.static) {
-        helperStatements.push(
-          t.variableDeclaration('var', [t.variableDeclarator(storageId)])
-        )
-      } else {
-        helperStatements.push(
-          t.variableDeclaration('var', [t.variableDeclarator(storageId, t.newExpression(t.identifier('WeakMap'), []))])
-        )
-      }
+      helperStatements.push(
+        t.variableDeclaration('var', [t.variableDeclarator(storageId, t.newExpression(classIntrinsic('WeakMap'), []))])
+      )
     }
+  }
+
+  // Private bodies can refer to members declared later in the class, or to the
+  // other half of an accessor pair, so transform after descriptor registration.
+  for (const member of body) {
+    if (!t.isClassPrivateMethod(member)) continue
+    const descriptor = privateDescriptors.get(member.key.id.name)!
+    const implId = member.kind === 'get' ? descriptor.getterId!
+      : member.kind === 'set' ? descriptor.setterId!
+      : descriptor.implId ?? descriptor.storageId
+    const methodBody = t.cloneNode(member.body, true)
+    transformPrivateBody(methodBody.body, privateDescriptors, classId)
+    helperStatements.push(t.variableDeclaration('var', [t.variableDeclarator(
+      implId,
+      t.functionExpression(null, member.params as t.Identifier[], methodBody, member.generator, member.async)
+    )]))
   }
 
   statements.push(...helperStatements)
@@ -667,7 +529,7 @@ function buildClassIife(node: t.ClassDeclaration | t.ClassExpression, classId: t
 
       if (member.static) {
         orderedStaticAssignments.push(
-          t.expressionStatement(t.assignmentExpression('=', descriptor.storageId, initExpr))
+          t.expressionStatement(t.callExpression(t.identifier('__privateFieldInit'), [descriptor.storageId, classId, initExpr]))
         )
       } else {
         orderedInstanceInitializers.push(
@@ -757,7 +619,7 @@ function buildClassIife(node: t.ClassDeclaration | t.ClassExpression, classId: t
           '=',
           t.memberExpression(classId, t.identifier('prototype')),
           t.callExpression(
-            t.memberExpression(t.identifier('Object'), t.identifier('create')),
+            t.memberExpression(classIntrinsic('Object'), t.identifier('create')),
             [t.memberExpression(t.identifier('_super'), t.identifier('prototype'))]
           )
         )
@@ -801,7 +663,7 @@ function buildClassIife(node: t.ClassDeclaration | t.ClassExpression, classId: t
       statements.push(
         t.expressionStatement(
           t.callExpression(
-            t.memberExpression(t.identifier('Object'), t.identifier('defineProperty')),
+            t.memberExpression(classIntrinsic('Object'), t.identifier('defineProperty')),
             [
               member.static ? classId : t.memberExpression(classId, t.identifier('prototype')),
               member.computed ? (member.key as t.Expression) : t.stringLiteral((member.key as t.Identifier).name),
@@ -828,7 +690,16 @@ function buildClassIife(node: t.ClassDeclaration | t.ClassExpression, classId: t
     )
   }
 
-  statements.push(...orderedStaticAssignments)
+  if (orderedStaticAssignments.length > 0) {
+    // Static field initializers evaluate with the class as their `this` value.
+    statements.push(t.expressionStatement(t.callExpression(
+      t.memberExpression(
+        t.functionExpression(null, [], t.blockStatement(orderedStaticAssignments)),
+        t.identifier('call')
+      ),
+      [t.cloneNode(classId)]
+    )))
+  }
 
   statements.push(t.returnStatement(classId))
 
