@@ -18,10 +18,11 @@ jobs:
     outputs:
       npm_tag: ${{ steps.metadata.outputs.npm_tag }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
         with:
           node-version: 24
+          package-manager-cache: false
       - id: metadata
         name: Require a matching version tag and an approved license
         run: |
@@ -55,12 +56,13 @@ jobs:
       contents: read
       id-token: write
     steps:
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
           node-version: 24
+          package-manager-cache: false
       - name: Install npm with Trusted Publishing support
         run: npm install --global npm@11.5.1 --ignore-scripts --registry=https://registry.npmjs.org
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v7
         with:
           name: verified-npm-package
           path: artifacts

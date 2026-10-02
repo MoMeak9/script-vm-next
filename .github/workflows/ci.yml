@@ -22,12 +22,12 @@ jobs:
       npm_config_registry: https://registry.npmjs.org
       pnpm_config_verify_deps_before_run: 'false'
     steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
+      - uses: actions/checkout@v5
+      - uses: pnpm/action-setup@v5
         with:
           version: 10.34.6
           run_install: false
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
           node-version: ${{ matrix.node }}
           cache: pnpm
@@ -45,12 +45,12 @@ jobs:
       npm_config_registry: https://registry.npmjs.org
       pnpm_config_verify_deps_before_run: 'false'
     steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
+      - uses: actions/checkout@v5
+      - uses: pnpm/action-setup@v5
         with:
           version: 10.34.6
           run_install: false
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
           node-version: 24
           cache: pnpm
@@ -72,14 +72,14 @@ jobs:
       - name: Build and test playground
         run: pnpm test:e2e
       - name: Save verified npm tarball
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: verified-npm-package
           path: artifacts/*.tgz
           if-no-files-found: error
           retention-days: 7
       - name: Save verified playground
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: verified-playground
           path: demo-dist/
@@ -87,7 +87,7 @@ jobs:
           retention-days: 7
       - name: Save browser failure evidence
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: playwright-failures
           path: artifacts/playwright/
