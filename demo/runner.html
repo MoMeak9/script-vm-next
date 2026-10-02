@@ -1,0 +1,168 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline' 'unsafe-eval' blob:; worker-src blob:; connect-src 'none'; img-src 'none'; media-src 'none'; font-src 'none'; style-src 'none'; object-src 'none'; frame-src 'none'; base-uri 'none'; form-action 'none'" />
+    <meta name="referrer" content="no-referrer" />
+    <title>Isolated JavaScript runner</title>
+  </head>
+  <body>
+    <script>
+      // This deliberately classic, inline bootstrap also works at an opaque origin.
+      // Keep unsafe-eval confined to this document; the editor never evaluates code.
+      (() => {
+        if (window.parent === window) return;
+        let initialized = false;
+
+        function workerMain() {
+          'use strict';
+          // User code is intentionally evaluated separately. Strict host callbacks
+          // prevent legacy Function.caller/arguments from exposing the private port.
+          self.addEventListener('message', function initialize(event) {
+            self.removeEventListener('message', initialize);
+            const port = event.ports[0];
+            if (!port || typeof event.data.code !== 'string') return;
+            const send = port.postMessage.bind(port);
+            const nativeSetTimeout = self.setTimeout.bind(self);
+            const nativeClearTimeout = self.clearTimeout.bind(self);
+            const nativeSetInterval = self.setInterval.bind(self);
+            const nativeClearInterval = self.clearInterval.bind(self);
+            const pendingTimers = new Set();
+            let done = false;
+            let settleTimer;
+            let logCount = 0;
+
+            function describe(value, depth = 0, seen = new Set()) {
+              if (typeof value === 'string') return value.slice(0, 4000);
+              if (value === null) return 'null';
+              if (typeof value === 'undefined') return 'undefined';
+              if (typeof value === 'bigint') return String(value) + 'n';
+              if (typeof value === 'function') return '[Function ' + (value.name || 'anonymous') + ']';
+              if (typeof value !== 'object') return String(value);
+              if (value instanceof Error) return (value.name + ': ' + value.message).slice(0, 4000);
+              if (seen.has(value)) return '[Circular]';
+              if (depth >= 3) return Array.isArray(value) ? '[Array]' : '[Object]';
+              seen.add(value);
+              const keys = Object.keys(value);
+              const parts = keys.slice(0, 20).map(key => {
+                let description;
+                const descriptor = Object.getOwnPropertyDescriptor(value, key);
+                description = descriptor && 'value' in descriptor
+                  ? describe(descriptor.value, depth + 1, seen)
+                  : '[Getter]';
+                return Array.isArray(value) ? description : key + ': ' + description;
+              });
+              if (keys.length > 20) parts.push('…');
+              seen.delete(value);
+              return (Array.isArray(value) ? '[' + parts.join(', ') + ']' : '{' + parts.join(', ') + '}').slice(0, 4000);
+            }
+
+            function fail(error) {
+              if (done) return;
+              done = true;
+              let message;
+              try { message = describe(error); } catch { message = 'Execution failed.'; }
+              send({ type: 'error', message: message.slice(0, 4000) });
+            }
+
+            function settle() {
+              nativeClearTimeout(settleTimer);
+              if (done || pendingTimers.size) return;
+              // Allow native promise jobs and unhandledrejection to be reported.
+              settleTimer = nativeSetTimeout(() => {
+                if (!done && !pendingTimers.size) {
+                  done = true;
+                  send({ type: 'completed' });
+                }
+              }, 50);
+            }
+
+            for (const level of ['log', 'info', 'warn', 'error', 'debug']) {
+              console[level] = (...args) => {
+                if (done) return;
+                if (logCount++ === 200) {
+                  send({ type: 'log', level: 'warn', text: 'Output limit reached (200 entries). Further output is omitted.' });
+                } else if (logCount <= 200) {
+                  let text;
+                  try { text = args.slice(0, 20).map(value => describe(value)).join(' ').slice(0, 4000); }
+                  catch { text = '[Value could not be displayed]'; }
+                  send({ type: 'log', level: level === 'debug' ? 'log' : level, text });
+                }
+              };
+            }
+
+            self.setTimeout = (callback, delay, ...args) => {
+              if (typeof callback !== 'function') throw new TypeError('The playground only supports function timer callbacks.');
+              const id = nativeSetTimeout(() => {
+                pendingTimers.delete(id);
+                try { callback(...args); } catch (error) { fail(error); }
+                settle();
+              }, delay);
+              pendingTimers.add(id);
+              nativeClearTimeout(settleTimer);
+              return id;
+            };
+            self.setInterval = (callback, delay, ...args) => {
+              if (typeof callback !== 'function') throw new TypeError('The playground only supports function timer callbacks.');
+              const id = nativeSetInterval(() => {
+                try { callback(...args); } catch (error) { fail(error); }
+              }, delay);
+              pendingTimers.add(id);
+              nativeClearTimeout(settleTimer);
+              return id;
+            };
+            self.clearTimeout = self.clearInterval = id => {
+              nativeClearTimeout(id);
+              nativeClearInterval(id);
+              pendingTimers.delete(id);
+              settle();
+            };
+            self.addEventListener('error', event => {
+              event.preventDefault();
+              fail(event.error || event.message);
+            });
+            self.addEventListener('unhandledrejection', event => {
+              event.preventDefault();
+              fail(event.reason);
+            });
+
+            send({ type: 'started' });
+            try {
+              new Function(event.data.code)();
+              settle();
+            } catch (error) {
+              fail(error);
+            }
+          });
+        }
+
+        window.addEventListener('message', event => {
+          if (initialized || event.source !== window.parent || event.data?.type !== 'run') return;
+          const { token, code } = event.data;
+          if (typeof token !== 'string' || typeof code !== 'string' || code.length > 8 * 1024 * 1024) return;
+          initialized = true;
+          const send = data => window.parent.postMessage({ ...data, token }, '*');
+          try {
+            const url = URL.createObjectURL(new Blob(['(' + workerMain.toString() + ')()'], { type: 'text/javascript' }));
+            const worker = new Worker(url);
+            const channel = new MessageChannel();
+            channel.port1.onmessage = message => {
+              if (message.data?.type === 'started') URL.revokeObjectURL(url);
+              send(message.data);
+              if (message.data?.type === 'completed' || message.data?.type === 'error') worker.terminate();
+            };
+            worker.onerror = event => {
+              event.preventDefault();
+              URL.revokeObjectURL(url);
+              worker.terminate();
+              send({ type: 'error', message: event.message || 'The execution worker could not start.' });
+            };
+            worker.postMessage({ code }, [channel.port2]);
+          } catch (error) {
+            send({ type: 'error', message: error instanceof Error ? error.message : String(error) });
+          }
+        });
+      })();
+    </script>
+  </body>
+</html>

@@ -4,10 +4,13 @@ import type { AllocationResult } from './regalloc'
 
 class ConstantPool {
   values: any[] = []
-  map = new Map<string, number>()
+  map = new Map<unknown, number>()
+  private readonly negativeZero = Symbol('negativeZero')
 
   add(value: any): number {
-    const key = JSON.stringify(value)
+    // Map preserves primitive types and non-finite numbers. Its SameValueZero
+    // comparison merges signed zeros, so give negative zero a separate key.
+    const key = Object.is(value, -0) ? this.negativeZero : value
     if (this.map.has(key)) {
       return this.map.get(key)!
     }
