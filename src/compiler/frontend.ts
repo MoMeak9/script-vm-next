@@ -2,6 +2,7 @@ import * as parser from '@babel/parser'
 import traverseModule from '@babel/traverse'
 import * as t from '@babel/types'
 import { normalizeFunctionParameters } from './parameter-normalization'
+import { inferFunctionNames } from './named-evaluation'
 
 // Babel publishes CommonJS. Native ESM and browser bundlers may expose its
 // callable default one level below the module's default export.
@@ -1256,6 +1257,8 @@ export function normalizeAst(file: t.File): t.File {
     return name
   }
   let templateSiteCounter = 0
+
+  inferFunctionNames(file)
 
   // Normalize parameters before object/class visitors move their method bodies.
   traverse(file, { Function: normalizeFunctionParameters })
