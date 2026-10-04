@@ -111,4 +111,39 @@ console.log('BigInt 自增 →', previous, '→', large);
 console.log('精确计算 →', large + 1n);
 `,
   },
+  {
+    id: 'es6-compatibility',
+    label: '05 · ES6 兼容',
+    description: '直接使用 ES6：迭代解构、参数作用域、静态继承与标签模板语义由编译器和运行时处理。',
+    source: `// 直接编译原始 JavaScript，无需额外的 Babel 配置。
+const [first, ...rest] = new Set([1, 2, 3]);
+console.log('Set 解构 →', first, rest.join(', '));
+
+// 默认参数中的闭包捕获参数作用域，不受函数体 var 赋值影响。
+function parameterScopes(value = 1, read = () => value) {
+  var value = 2;
+  return [read(), value].join(', ');
+}
+console.log('参数作用域 →', parameterScopes());
+
+class Parent {
+  static answer() {
+    return 42;
+  }
+}
+class Child extends Parent {}
+console.log('静态继承 →', Child.answer());
+
+// 同一标签模板位置复用模板对象，其 cooked/raw 数组均被冻结。
+function tag(strings) {
+  return strings;
+}
+function readTemplate() {
+  return tag\`value=\${42}\`;
+}
+const template = readTemplate();
+console.log('模板对象复用 →', template === readTemplate());
+console.log('模板对象冻结 →', Object.isFrozen(template), Object.isFrozen(template.raw));
+`,
+  },
 ];

@@ -402,7 +402,8 @@ describe('register VM runtime', () => {
       __result = [a, b, arr.length, 1 in arr, arr[1], arr[2]]
     `)
 
-    expect(result).toEqual(['fallback', 0, 3, true, undefined, 3])
+    // A hole is absent, unlike an explicitly stored undefined value.
+    expect(result).toEqual(['fallback', 0, 3, false, undefined, 3])
   })
 
   it('supports instanceof and in operators', () => {

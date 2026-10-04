@@ -16,6 +16,8 @@ export type IRInstruction =
   | { op: 'init_slot'; depth: number; slot: number; src: number }
   | { op: 'store_slot'; depth: number; slot: number; src: number }
   | { op: 'load_global'; dst: number; name: string }
+  | { op: 'typeof_global'; dst: number; name: string }
+  | { op: 'parameter_end' }
   | { op: 'store_global'; name: string; src: number }
   | { op: 'load_this'; dst: number }
   | { op: 'load_arguments'; dst: number }
@@ -24,6 +26,7 @@ export type IRInstruction =
   | { op: 'binary'; dst: number; left: number; right: number; operator: string }
   | { op: 'unary'; dst: number; value: number; operator: string }
   | { op: 'jump'; target: string }
+  | { op: 'abrupt_jump'; target: string; scopeDepth: number }
   | { op: 'jump_if_false'; condition: number; target: string }
   | { op: 'jump_if_not_nullish'; condition: number; target: string }
   | { op: 'try'; tryStart: string; catchStart: string | null; finallyStart: string | null; end: string; catchDepth: number; catchSlot: number }
@@ -51,6 +54,10 @@ export interface FunctionIR {
   registerCount: number
   async: boolean
   generator: boolean
+  strict: boolean
+  method: boolean
+  module: boolean
+  length: number
 }
 
 export interface LoweredProgram {

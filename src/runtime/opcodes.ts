@@ -33,6 +33,9 @@ export const OPCODES = {
   JUMP_IF_NOT_NULLISH: 32,
   DELETE_PROP: 33,
   LOAD_NEW_TARGET: 34,
+  TYPEOF_GLOBAL: 35,
+  ABRUPT_JUMP: 36,
+  NOP: 37,
 } as const
 
 export type OpcodeName = keyof typeof OPCODES

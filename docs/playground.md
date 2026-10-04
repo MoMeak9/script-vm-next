@@ -1,10 +1,10 @@
 # Browser playground
 
-The playground is a static Vite/TypeScript application intended for GitHub Pages at `https://momeak9.github.io/script-vm-next/`. Its URL becomes available after a successful Pages deployment. It uses the same source compiler as the npm `script-vm-next/core` entry and displays the package version and source commit for traceability.
+The playground is a static Vite/TypeScript application deployed by GitHub Actions to [GitHub Pages](https://momeak9.github.io/script-vm-next/). It uses the same source compiler as the npm `script-vm-next/core` entry and displays the package version and source commit for traceability.
 
 ## Use it
 
-Choose an example or enter a standalone script, compile it, inspect the output, then run the generated program. Console output appears below the editor. You can stop a run, restore the example, copy the generated code, or download it. Compile diagnostics include the error code and source position when the compiler provides one. The output panel reports compilation time, generated output size, bytecode length, and function count.
+Choose an example or enter a standalone script, compile it, inspect the output, then run the generated program. The ES6 compatibility example demonstrates automatic iterable destructuring, default-parameter scope, class static inheritance, and template-object reuse and freezing; no source rewrites or extra build configuration are required. Console output appears below the editor. You can stop a run, restore the example, copy the generated code, or download it. Compile diagnostics include the error code and source position when the compiler provides one. The output panel reports compilation time, generated output size, bytecode length, and function count.
 
 Compilation and execution happen in the browser; the application has no compiler server and does not upload source code. Static application assets are loaded from the hosting site. This first version accepts one JavaScript script and produces an IIFE. The editor does not provide a filesystem, dependency installation, module imports/exports, `require`, dynamic `import()`, or DOM access during execution. Those restrictions are narrower than the Node file API's capabilities.
 

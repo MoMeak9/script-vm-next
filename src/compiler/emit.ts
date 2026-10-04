@@ -35,6 +35,11 @@ export function emitBytecode(program: AllocationResult, format: ProgramArtifact[
     slotKinds: fn.slotKinds,
     async: fn.async,
     generator: fn.generator,
+    strict: fn.strict,
+    method: fn.method,
+    module: fn.module,
+    length: fn.length,
+    parameterEnd: undefined as number | undefined,
   }))
 
   const bytecode: number[] = []
@@ -48,6 +53,9 @@ export function emitBytecode(program: AllocationResult, format: ProgramArtifact[
     for (const instruction of fn.instructions) {
       if (instruction.op === 'label') {
         labels.set(instruction.name, bytecode.length)
+        // Keep adjacent source control-flow destinations distinct. In particular,
+        // a loop end inside try must not alias the following catch/finally range.
+        bytecode.push(OPCODES.NOP)
         continue
       }
 
@@ -80,6 +88,12 @@ export function emitBytecode(program: AllocationResult, format: ProgramArtifact[
           break
         case 'store_slot':
           bytecode.push(OPCODES.STORE_SLOT, instruction.depth, instruction.slot, instruction.src)
+          break
+        case 'parameter_end':
+          functions[fn.id].parameterEnd = bytecode.length
+          break
+        case 'typeof_global':
+          bytecode.push(OPCODES.TYPEOF_GLOBAL, instruction.dst, pool.add(instruction.name))
           break
         case 'load_global':
           bytecode.push(OPCODES.LOAD_GLOBAL, instruction.dst, pool.add(instruction.name))
@@ -115,6 +129,10 @@ export function emitBytecode(program: AllocationResult, format: ProgramArtifact[
             instruction.value,
             UNARY_OPS[instruction.operator as keyof typeof UNARY_OPS]
           )
+          break
+        case 'abrupt_jump':
+          bytecode.push(OPCODES.ABRUPT_JUMP, -1, instruction.scopeDepth)
+          fixups.push({ index: bytecode.length - 2, target: instruction.target })
           break
         case 'jump':
           bytecode.push(OPCODES.JUMP, -1)

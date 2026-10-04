@@ -1,4 +1,6 @@
 import { BINARY_OPS, OPCODES, UNARY_OPS } from '../runtime/opcodes'
+import { iteratorRuntimeSource } from './iterator-runtime'
+import { templateRuntimeSource } from './template-runtime'
 
 export function generateRuntimeSource(): string {
   return `
@@ -9,6 +11,7 @@ function __scriptvmRun(metadata, globalObject) {
   var NORMAL = 'normal';
   var RETURN = 'return';
   var THROW = 'throw';
+  var JUMP = 'jump';
 
   // Frontend-generated helpers use names that cannot occur as source bindings.
   // Capture their intrinsics outside interpreted lexical scopes; a parameter
@@ -16,15 +19,48 @@ function __scriptvmRun(metadata, globalObject) {
   var intrinsicObject = Object;
   var intrinsicWeakMap = WeakMap;
   var intrinsicWeakSet = WeakSet;
+  var completionRecords = new intrinsicWeakSet();
   var intrinsicTypeError = TypeError;
+  var intrinsicReferenceError = ReferenceError;
+  var intrinsicReflect = Reflect;
+  var intrinsicProxy = Proxy;
+  var intrinsicArraySlice = Array.prototype.slice;
+  function arraySlice(value, start) { return intrinsicReflect.apply(intrinsicArraySlice, value, [start]); }
+  ${iteratorRuntimeSource}
+  ${templateRuntimeSource}
+  function toTemplateString(value) { return \`\${value}\`; }
   function readGlobal(name) {
     switch (name) {
       case '@script-vm/intrinsic/Object': return intrinsicObject;
       case '@script-vm/intrinsic/WeakMap': return intrinsicWeakMap;
       case '@script-vm/intrinsic/WeakSet': return intrinsicWeakSet;
       case '@script-vm/intrinsic/TypeError': return intrinsicTypeError;
-      default: return globalObject[name];
+      case '@script-vm/intrinsic/ReferenceError': return intrinsicReferenceError;
+      case '@script-vm/intrinsic/Reflect': return intrinsicReflect;
+      case '@script-vm/intrinsic/Proxy': return intrinsicProxy;
+      case '@script-vm/intrinsic/ArraySlice': return arraySlice;
+      case '@script-vm/intrinsic/IteratorStart': return iteratorStart;
+      case '@script-vm/intrinsic/IteratorStep': return iteratorStep;
+      case '@script-vm/intrinsic/IteratorRest': return iteratorRest;
+      case '@script-vm/intrinsic/IteratorClose': return iteratorClose;
+      case '@script-vm/intrinsic/RequireObject': return requireObject;
+      case '@script-vm/intrinsic/ObjectRest': return objectRest;
+      case '@script-vm/intrinsic/PropertyKey': return propertyKey;
+      case '@script-vm/intrinsic/EnumerateKeys': return enumerateKeys;
+      case '@script-vm/intrinsic/FlattenArrays': return flattenArrays;
+      case '@script-vm/intrinsic/Apply': return iteratorIntrinsicApply;
+      case '@script-vm/intrinsic/Construct': return iteratorIntrinsicConstruct;
+      case '@script-vm/intrinsic/GetTemplateObject': return getTemplateObject;
+      case '@script-vm/intrinsic/ToString': return toTemplateString;
+      default:
+        if (!(name in globalObject)) throw new intrinsicReferenceError(name + ' is not defined');
+        return globalObject[name];
     }
+  }
+
+  function writeGlobal(name, value, strict) {
+    if (strict && !(name in globalObject)) throw new intrinsicReferenceError(name + ' is not defined');
+    if (!intrinsicReflect.set(globalObject, name, value) && strict) throw new intrinsicTypeError('Cannot assign global ' + name);
   }
 
   function binary(op, left, right) {
@@ -82,8 +118,21 @@ function __scriptvmRun(metadata, globalObject) {
     return current
   }
 
+  function unwindScope(env, depth) {
+    while (env.scopeDepth > depth) env = env.parent
+    return env
+  }
+
   function completion(type, value) {
-    return { type: type, value: value }
+    var record = { type: type, value: value }
+    completionRecords.add(record)
+    return record
+  }
+
+  function generatorCompletion(value) {
+    // A return injected while finally is yielding emerges from yield* as the
+    // caller's raw value. Keep it distinct from internal completion records.
+    return completionRecords.has(value) ? value : completion(RETURN, value)
   }
 
   function assertInitialized(targetEnv, slot) {
@@ -119,7 +168,8 @@ function __scriptvmRun(metadata, globalObject) {
       slotKinds: meta.slotKinds,
       slotNames: meta.slotNames,
       parent: parentEnv,
-      thisValue: thisValue,
+      scopeDepth: 0,
+      thisValue: meta.strict || meta.module ? thisValue : thisValue == null ? globalObject : intrinsicObject(thisValue),
       args: args,
     }
     for (var i = 0; i < meta.slotCount; i++) {
@@ -145,6 +195,7 @@ function __scriptvmRun(metadata, globalObject) {
       slotKinds: meta.slotKinds,
       slotNames: meta.slotNames,
       parent: parentEnv,
+      scopeDepth: parentEnv.scopeDepth + 1,
       thisValue: thisValue,
       args: args,
     }
@@ -160,39 +211,66 @@ function __scriptvmRun(metadata, globalObject) {
     return env
   }
 
+  function prepareGenerator(functionId, parentEnv, thisValue, args) {
+    var meta = metadata.functions[functionId]
+    var frame = { env: createEnv(meta, parentEnv, thisValue, args), regs: new Array(meta.registerCount) }
+    if (meta.parameterEnd !== undefined) {
+      executeSync(functionId, parentEnv, thisValue, args, undefined, frame, meta.parameterEnd)
+    }
+    return frame
+  }
+
   function createClosure(functionId, parentEnv) {
     var meta = metadata.functions[functionId]
     var closure
-    if (meta.async && meta.generator) {
-      closure = async function*() {
-        return yield* executeAsyncGenerator(functionId, parentEnv, this, Array.prototype.slice.call(arguments), new.target)
+    if (meta.generator) {
+      var generator = meta.async ? async function*(frame, receiver, args) {
+        'use strict';
+        return yield* executeAsyncGenerator(functionId, parentEnv, receiver, args, undefined, frame)
+      } : function*(frame, receiver, args) {
+        'use strict';
+        return yield* executeGenerator(functionId, parentEnv, receiver, args, undefined, frame)
       }
+      // Parameter expressions run when the generator is called, before its first
+      // next(). A concise method keeps this eager wrapper non-constructable.
+      closure = { invoke() {
+        'use strict';
+        var args = arraySlice(arguments, 0)
+        var frame = prepareGenerator(functionId, parentEnv, this, args)
+        return generator(frame, this, args)
+      } }.invoke
+      intrinsicObject.setPrototypeOf(closure, intrinsicObject.getPrototypeOf(generator))
+      intrinsicObject.defineProperty(closure, 'prototype', { value: generator.prototype, writable: true })
     } else if (meta.async) {
       closure = async function() {
-        return await executeAsync(functionId, parentEnv, this, Array.prototype.slice.call(arguments), new.target)
+        'use strict';
+        return await executeAsync(functionId, parentEnv, this, arraySlice(arguments, 0), new.target)
       }
-    } else if (meta.generator) {
-      closure = function*() {
-        return yield* executeGenerator(functionId, parentEnv, this, Array.prototype.slice.call(arguments), new.target)
-      }
+    } else if (meta.method) {
+      closure = { invoke() {
+        'use strict';
+        return executeSync(functionId, parentEnv, this, arraySlice(arguments, 0), undefined)
+      } }.invoke
     } else {
       closure = function() {
-        return executeSync(functionId, parentEnv, this, Array.prototype.slice.call(arguments), new.target)
+        'use strict';
+        return executeSync(functionId, parentEnv, this, arraySlice(arguments, 0), new.target)
       }
     }
-    Object.defineProperty(closure, 'name', {
+    intrinsicObject.defineProperty(closure, 'name', {
       value: meta.name === null ? '' : meta.name,
       configurable: true,
       writable: false,
       enumerable: false
     })
+    intrinsicObject.defineProperty(closure, 'length', { value: meta.length, configurable: true })
     return closure
   }
 
-  function executeSync(functionId, parentEnv, thisValue, args, newTarget) {
+  function executeSync(functionId, parentEnv, thisValue, args, newTarget, frame, end) {
     var meta = metadata.functions[functionId]
-    var env = createEnv(meta, parentEnv, thisValue, args)
-    var regs = new Array(meta.registerCount)
+    var env = frame ? frame.env : createEnv(meta, parentEnv, thisValue, args)
+    var regs = frame ? frame.regs : new Array(meta.registerCount)
     var code = metadata.bytecode
     function run(start, end) {
       var pc = start
@@ -200,6 +278,8 @@ function __scriptvmRun(metadata, globalObject) {
         var op = code[pc++]
         try {
           switch (op) {
+            case OPCODES.NOP:
+              break
             case OPCODES.ENTER_SCOPE: {
               var enterCount = code[pc++]
               var enterSlots = []
@@ -257,8 +337,11 @@ function __scriptvmRun(metadata, globalObject) {
             case OPCODES.LOAD_GLOBAL:
               regs[code[pc++]] = readGlobal(metadata.constantPool[code[pc++]])
               break
+            case OPCODES.TYPEOF_GLOBAL:
+              regs[code[pc++]] = typeof globalObject[metadata.constantPool[code[pc++]]]
+              break
             case OPCODES.STORE_GLOBAL:
-              globalObject[metadata.constantPool[code[pc++]]] = regs[code[pc++]]
+              writeGlobal(metadata.constantPool[code[pc++]], regs[code[pc++]], meta.strict)
               break
             case OPCODES.LOAD_THIS:
               regs[code[pc++]] = env.thisValue
@@ -305,6 +388,16 @@ function __scriptvmRun(metadata, globalObject) {
               regs[unaryDst] = unary(code[pc++], unaryValue)
               break
             }
+            case OPCODES.ABRUPT_JUMP: {
+              var jumpTarget = code[pc++]
+              var jumpDepth = code[pc++]
+              if (jumpTarget < start || jumpTarget >= end) {
+                return completion(JUMP, { target: jumpTarget, depth: jumpDepth })
+              }
+              env = unwindScope(env, jumpDepth)
+              pc = jumpTarget
+              break
+            }
             case OPCODES.JUMP:
               pc = code[pc]
               break
@@ -342,15 +435,19 @@ function __scriptvmRun(metadata, globalObject) {
                   writeSlot(resolveEnv(env, 0), catchSlot, tryCompletion.value, true)
                 }
                 tryCompletion = run(catchStart, catchEnd)
-                if (catchSlot >= 0) {
-                  env = env.parent
-                }
+                env = savedEnv
               }
               if (finallyStart !== after) {
                 var finallyCompletion = run(finallyStart, after)
                 if (finallyCompletion.type !== NORMAL) {
                   tryCompletion = finallyCompletion
                 }
+              }
+              env = savedEnv
+              if (tryCompletion.type === JUMP && tryCompletion.value.target >= start && tryCompletion.value.target < end) {
+                env = unwindScope(env, tryCompletion.value.depth)
+                pc = tryCompletion.value.target
+                break
               }
               if (tryCompletion.type !== NORMAL) {
                 return tryCompletion
@@ -367,7 +464,7 @@ function __scriptvmRun(metadata, globalObject) {
               for (var i = 0; i < argc; i++) {
                 argv.push(regs[code[pc++]])
               }
-              var receiver = thisIndex >= 0 ? regs[thisIndex] : globalObject
+              var receiver = thisIndex >= 0 ? regs[thisIndex] : undefined
               regs[callDst] = Reflect.apply(callFn, receiver, argv)
               break
             }
@@ -421,7 +518,8 @@ function __scriptvmRun(metadata, globalObject) {
       return completion(NORMAL, undefined)
     }
 
-    var result = run(meta.entry, meta.end)
+    var result = run(meta.entry, end === undefined ? meta.end : end)
+    if (frame) frame.env = env
     if (result.type === THROW) {
       throw result.value
     }
@@ -439,6 +537,8 @@ function __scriptvmRun(metadata, globalObject) {
         var op = code[pc++]
         try {
           switch (op) {
+            case OPCODES.NOP:
+              break
             case OPCODES.ENTER_SCOPE: {
               var enterCount = code[pc++]
               var enterSlots = []
@@ -496,8 +596,11 @@ function __scriptvmRun(metadata, globalObject) {
             case OPCODES.LOAD_GLOBAL:
               regs[code[pc++]] = readGlobal(metadata.constantPool[code[pc++]])
               break
+            case OPCODES.TYPEOF_GLOBAL:
+              regs[code[pc++]] = typeof globalObject[metadata.constantPool[code[pc++]]]
+              break
             case OPCODES.STORE_GLOBAL:
-              globalObject[metadata.constantPool[code[pc++]]] = regs[code[pc++]]
+              writeGlobal(metadata.constantPool[code[pc++]], regs[code[pc++]], meta.strict)
               break
             case OPCODES.LOAD_THIS:
               regs[code[pc++]] = env.thisValue
@@ -544,6 +647,16 @@ function __scriptvmRun(metadata, globalObject) {
               regs[unaryDst] = unary(code[pc++], unaryValue)
               break
             }
+            case OPCODES.ABRUPT_JUMP: {
+              var jumpTarget = code[pc++]
+              var jumpDepth = code[pc++]
+              if (jumpTarget < start || jumpTarget >= end) {
+                return completion(JUMP, { target: jumpTarget, depth: jumpDepth })
+              }
+              env = unwindScope(env, jumpDepth)
+              pc = jumpTarget
+              break
+            }
             case OPCODES.JUMP:
               pc = code[pc]
               break
@@ -572,22 +685,28 @@ function __scriptvmRun(metadata, globalObject) {
               var catchSlot = code[pc++]
               var tryEnd = catchStart !== after ? catchStart : (finallyStart !== after ? finallyStart : after)
               var catchEnd = finallyStart !== after ? finallyStart : after
+              var savedEnv = env
               var tryCompletion = await run(tryStart, tryEnd)
+              env = savedEnv
               if (tryCompletion.type === THROW && catchStart !== after) {
                 if (catchSlot >= 0) {
                   env = createScopeEnv(meta, env, env.thisValue, env.args, [catchSlot], null)
                   writeSlot(resolveEnv(env, 0), catchSlot, tryCompletion.value, true)
                 }
                 tryCompletion = await run(catchStart, catchEnd)
-                if (catchSlot >= 0) {
-                  env = env.parent
-                }
+                env = savedEnv
               }
               if (finallyStart !== after) {
                 var finallyCompletion = await run(finallyStart, after)
                 if (finallyCompletion.type !== NORMAL) {
                   tryCompletion = finallyCompletion
                 }
+              }
+              env = savedEnv
+              if (tryCompletion.type === JUMP && tryCompletion.value.target >= start && tryCompletion.value.target < end) {
+                env = unwindScope(env, tryCompletion.value.depth)
+                pc = tryCompletion.value.target
+                break
               }
               if (tryCompletion.type !== NORMAL) {
                 return tryCompletion
@@ -604,7 +723,7 @@ function __scriptvmRun(metadata, globalObject) {
               for (var i = 0; i < argc; i++) {
                 argv.push(regs[code[pc++]])
               }
-              var receiver = thisIndex >= 0 ? regs[thisIndex] : globalObject
+              var receiver = thisIndex >= 0 ? regs[thisIndex] : undefined
               regs[callDst] = Reflect.apply(callFn, receiver, argv)
               break
             }
@@ -666,18 +785,21 @@ function __scriptvmRun(metadata, globalObject) {
     return result.value
   }
 
-  function* executeGenerator(functionId, parentEnv, thisValue, args, newTarget) {
+  function* executeGenerator(functionId, parentEnv, thisValue, args, newTarget, frame) {
     var meta = metadata.functions[functionId]
-    var env = createEnv(meta, parentEnv, thisValue, args)
-    var regs = new Array(meta.registerCount)
+    var env = frame ? frame.env : createEnv(meta, parentEnv, thisValue, args)
+    var regs = frame ? frame.regs : new Array(meta.registerCount)
     var code = metadata.bytecode
 
     function* run(start, end) {
       var pc = start
+      var externalReturn = false
       while (pc < end) {
         var op = code[pc++]
         try {
           switch (op) {
+            case OPCODES.NOP:
+              break
             case OPCODES.ENTER_SCOPE: {
               var enterCount = code[pc++]
               var enterSlots = []
@@ -735,8 +857,11 @@ function __scriptvmRun(metadata, globalObject) {
             case OPCODES.LOAD_GLOBAL:
               regs[code[pc++]] = readGlobal(metadata.constantPool[code[pc++]])
               break
+            case OPCODES.TYPEOF_GLOBAL:
+              regs[code[pc++]] = typeof globalObject[metadata.constantPool[code[pc++]]]
+              break
             case OPCODES.STORE_GLOBAL:
-              globalObject[metadata.constantPool[code[pc++]]] = regs[code[pc++]]
+              writeGlobal(metadata.constantPool[code[pc++]], regs[code[pc++]], meta.strict)
               break
             case OPCODES.LOAD_THIS:
               regs[code[pc++]] = env.thisValue
@@ -783,6 +908,16 @@ function __scriptvmRun(metadata, globalObject) {
               regs[unaryDst] = unary(code[pc++], unaryValue)
               break
             }
+            case OPCODES.ABRUPT_JUMP: {
+              var jumpTarget = code[pc++]
+              var jumpDepth = code[pc++]
+              if (jumpTarget < start || jumpTarget >= end) {
+                return completion(JUMP, { target: jumpTarget, depth: jumpDepth })
+              }
+              env = unwindScope(env, jumpDepth)
+              pc = jumpTarget
+              break
+            }
             case OPCODES.JUMP:
               pc = code[pc]
               break
@@ -811,22 +946,45 @@ function __scriptvmRun(metadata, globalObject) {
               var catchSlot = code[pc++]
               var tryEnd = catchStart !== after ? catchStart : (finallyStart !== after ? finallyStart : after)
               var catchEnd = finallyStart !== after ? finallyStart : after
-              var tryCompletion = yield* run(tryStart, tryEnd)
-              if (tryCompletion.type === THROW && catchStart !== after) {
-                if (catchSlot >= 0) {
-                  env = createScopeEnv(meta, env, env.thisValue, env.args, [catchSlot], null)
-                  writeSlot(resolveEnv(env, 0), catchSlot, tryCompletion.value, true)
+              var savedEnv = env
+              var tryCompletion
+              var nativeAbrupt = true
+              try {
+                tryCompletion = generatorCompletion(yield* run(tryStart, tryEnd))
+                env = savedEnv
+                if (tryCompletion.type === THROW && catchStart !== after) {
+                  if (catchSlot >= 0) {
+                    env = createScopeEnv(meta, env, env.thisValue, env.args, [catchSlot], null)
+                    writeSlot(resolveEnv(env, 0), catchSlot, tryCompletion.value, true)
+                  }
+                  tryCompletion = generatorCompletion(yield* run(catchStart, catchEnd))
+                  env = savedEnv
                 }
-                tryCompletion = yield* run(catchStart, catchEnd)
-                if (catchSlot >= 0) {
-                  env = env.parent
+                nativeAbrupt = false
+              } finally {
+                env = savedEnv
+                // Native generator.return() propagates through yield* as a
+                // return completion. A native finally guarantees that the
+                // interpreted finally (including iterator cleanup) still runs.
+                if (finallyStart !== after) {
+                  var finallyCompletion = generatorCompletion(yield* run(finallyStart, after))
+                  if (finallyCompletion.type !== NORMAL) {
+                    if (nativeAbrupt) {
+                      if (finallyCompletion.type === THROW) {
+                        externalReturn = true
+                        throw finallyCompletion.value
+                      }
+                      if (finallyCompletion.type === RETURN) return finallyCompletion.value
+                    }
+                    tryCompletion = finallyCompletion
+                  }
                 }
+                env = savedEnv
               }
-              if (finallyStart !== after) {
-                var finallyCompletion = yield* run(finallyStart, after)
-                if (finallyCompletion.type !== NORMAL) {
-                  tryCompletion = finallyCompletion
-                }
+              if (tryCompletion.type === JUMP && tryCompletion.value.target >= start && tryCompletion.value.target < end) {
+                env = unwindScope(env, tryCompletion.value.depth)
+                pc = tryCompletion.value.target
+                break
               }
               if (tryCompletion.type !== NORMAL) {
                 return tryCompletion
@@ -843,7 +1001,7 @@ function __scriptvmRun(metadata, globalObject) {
               for (var i = 0; i < argc; i++) {
                 argv.push(regs[code[pc++]])
               }
-              var receiver = thisIndex >= 0 ? regs[thisIndex] : globalObject
+              var receiver = thisIndex >= 0 ? regs[thisIndex] : undefined
               regs[callDst] = Reflect.apply(callFn, receiver, argv)
               break
             }
@@ -899,6 +1057,7 @@ function __scriptvmRun(metadata, globalObject) {
               throw new Error('Unknown opcode: ' + op + ' at pc ' + (pc - 1))
           }
         } catch (error) {
+          if (externalReturn) throw error
           return completion(THROW, error)
         }
       }
@@ -906,25 +1065,28 @@ function __scriptvmRun(metadata, globalObject) {
       return completion(NORMAL, undefined)
     }
 
-    var result = yield* run(meta.entry, meta.end)
+    var result = generatorCompletion(yield* run(frame && meta.parameterEnd !== undefined ? meta.parameterEnd : meta.entry, meta.end))
     if (result.type === THROW) {
       throw result.value
     }
     return result.value
   }
 
-  async function* executeAsyncGenerator(functionId, parentEnv, thisValue, args, newTarget) {
+  async function* executeAsyncGenerator(functionId, parentEnv, thisValue, args, newTarget, frame) {
     var meta = metadata.functions[functionId]
-    var env = createEnv(meta, parentEnv, thisValue, args)
-    var regs = new Array(meta.registerCount)
+    var env = frame ? frame.env : createEnv(meta, parentEnv, thisValue, args)
+    var regs = frame ? frame.regs : new Array(meta.registerCount)
     var code = metadata.bytecode
 
     async function* run(start, end) {
       var pc = start
+      var externalReturn = false
       while (pc < end) {
         var op = code[pc++]
         try {
           switch (op) {
+            case OPCODES.NOP:
+              break
             case OPCODES.ENTER_SCOPE: {
               var enterCount = code[pc++]
               var enterSlots = []
@@ -982,8 +1144,11 @@ function __scriptvmRun(metadata, globalObject) {
             case OPCODES.LOAD_GLOBAL:
               regs[code[pc++]] = readGlobal(metadata.constantPool[code[pc++]])
               break
+            case OPCODES.TYPEOF_GLOBAL:
+              regs[code[pc++]] = typeof globalObject[metadata.constantPool[code[pc++]]]
+              break
             case OPCODES.STORE_GLOBAL:
-              globalObject[metadata.constantPool[code[pc++]]] = regs[code[pc++]]
+              writeGlobal(metadata.constantPool[code[pc++]], regs[code[pc++]], meta.strict)
               break
             case OPCODES.LOAD_THIS:
               regs[code[pc++]] = env.thisValue
@@ -1030,6 +1195,16 @@ function __scriptvmRun(metadata, globalObject) {
               regs[unaryDst] = unary(code[pc++], unaryValue)
               break
             }
+            case OPCODES.ABRUPT_JUMP: {
+              var jumpTarget = code[pc++]
+              var jumpDepth = code[pc++]
+              if (jumpTarget < start || jumpTarget >= end) {
+                return completion(JUMP, { target: jumpTarget, depth: jumpDepth })
+              }
+              env = unwindScope(env, jumpDepth)
+              pc = jumpTarget
+              break
+            }
             case OPCODES.JUMP:
               pc = code[pc]
               break
@@ -1058,22 +1233,45 @@ function __scriptvmRun(metadata, globalObject) {
               var catchSlot = code[pc++]
               var tryEnd = catchStart !== after ? catchStart : (finallyStart !== after ? finallyStart : after)
               var catchEnd = finallyStart !== after ? finallyStart : after
-              var tryCompletion = yield* run(tryStart, tryEnd)
-              if (tryCompletion.type === THROW && catchStart !== after) {
-                if (catchSlot >= 0) {
-                  env = createScopeEnv(meta, env, env.thisValue, env.args, [catchSlot], null)
-                  writeSlot(resolveEnv(env, 0), catchSlot, tryCompletion.value, true)
+              var savedEnv = env
+              var tryCompletion
+              var nativeAbrupt = true
+              try {
+                tryCompletion = generatorCompletion(yield* run(tryStart, tryEnd))
+                env = savedEnv
+                if (tryCompletion.type === THROW && catchStart !== after) {
+                  if (catchSlot >= 0) {
+                    env = createScopeEnv(meta, env, env.thisValue, env.args, [catchSlot], null)
+                    writeSlot(resolveEnv(env, 0), catchSlot, tryCompletion.value, true)
+                  }
+                  tryCompletion = generatorCompletion(yield* run(catchStart, catchEnd))
+                  env = savedEnv
                 }
-                tryCompletion = yield* run(catchStart, catchEnd)
-                if (catchSlot >= 0) {
-                  env = env.parent
+                nativeAbrupt = false
+              } finally {
+                env = savedEnv
+                // Native generator.return() propagates through yield* as a
+                // return completion. A native finally guarantees that the
+                // interpreted finally (including iterator cleanup) still runs.
+                if (finallyStart !== after) {
+                  var finallyCompletion = generatorCompletion(yield* run(finallyStart, after))
+                  if (finallyCompletion.type !== NORMAL) {
+                    if (nativeAbrupt) {
+                      if (finallyCompletion.type === THROW) {
+                        externalReturn = true
+                        throw finallyCompletion.value
+                      }
+                      if (finallyCompletion.type === RETURN) return finallyCompletion.value
+                    }
+                    tryCompletion = finallyCompletion
+                  }
                 }
+                env = savedEnv
               }
-              if (finallyStart !== after) {
-                var finallyCompletion = yield* run(finallyStart, after)
-                if (finallyCompletion.type !== NORMAL) {
-                  tryCompletion = finallyCompletion
-                }
+              if (tryCompletion.type === JUMP && tryCompletion.value.target >= start && tryCompletion.value.target < end) {
+                env = unwindScope(env, tryCompletion.value.depth)
+                pc = tryCompletion.value.target
+                break
               }
               if (tryCompletion.type !== NORMAL) {
                 return tryCompletion
@@ -1090,7 +1288,7 @@ function __scriptvmRun(metadata, globalObject) {
               for (var i = 0; i < argc; i++) {
                 argv.push(regs[code[pc++]])
               }
-              var receiver = thisIndex >= 0 ? regs[thisIndex] : globalObject
+              var receiver = thisIndex >= 0 ? regs[thisIndex] : undefined
               regs[callDst] = Reflect.apply(callFn, receiver, argv)
               break
             }
@@ -1147,6 +1345,7 @@ function __scriptvmRun(metadata, globalObject) {
               throw new Error('Unknown opcode: ' + op + ' at pc ' + (pc - 1))
           }
         } catch (error) {
+          if (externalReturn) throw error
           return completion(THROW, error)
         }
       }
@@ -1154,14 +1353,14 @@ function __scriptvmRun(metadata, globalObject) {
       return completion(NORMAL, undefined)
     }
 
-    var result = yield* run(meta.entry, meta.end)
+    var result = generatorCompletion(yield* run(frame && meta.parameterEnd !== undefined ? meta.parameterEnd : meta.entry, meta.end))
     if (result.type === THROW) {
       throw result.value
     }
     return result.value
   }
 
-  return executeSync(metadata.entryFunctionId, null, globalObject, [])
+  return executeSync(metadata.entryFunctionId, null, metadata.functions[metadata.entryFunctionId].module ? undefined : globalObject, [])
 }
 `
 }
