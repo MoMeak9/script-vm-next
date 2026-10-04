@@ -207,8 +207,23 @@ describe('arguments object reflection and unmapped behavior', () => {
   })
   it('captures arguments lexically inside arrows and allows reassignment', () => {
     expectEquivalent(`
-      function f(a) { const read = () => arguments[0]; arguments = [3]; return read(); }
+      function f(a) { const read = () => arguments[0]; const nested = () => () => arguments[0]; arguments = [3]; return [read(), nested()()]; }
       globalThis.__result = f(1);
+    `)
+  })
+  it('uses captured iterator symbols after user code replaces the global Symbol', () => {
+    expectEquivalent(`
+      const originalSymbol = Symbol;
+      const iteratorKey = Symbol.iterator;
+      let result;
+      function ordinary(a) { a = 2; return [arguments[0], typeof arguments[iteratorKey], Object.getOwnPropertySymbols(arguments).length]; }
+      function* generator(a) { a = 3; yield arguments[0]; return typeof arguments[iteratorKey]; }
+      try {
+        globalThis.Symbol = undefined;
+        const iterator = generator(1);
+        result = [ordinary(1), iterator.next(), iterator.next()];
+      } finally { globalThis.Symbol = originalSymbol; }
+      globalThis.__result = result;
     `)
   })
   it('works when user code replaces Object helper methods after initialization', () => {
