@@ -1,11 +1,8 @@
 import * as fs from 'node:fs'
 import * as path from 'node:path'
-import { bundle, hasCJSSyntax, hasModuleSyntax } from './bundler'
-import { emitBytecode } from './emit'
-import { normalizeAst, parseSource, resolveFormat as resolveFormatInternal } from './frontend'
-import { lowerToIR } from './lowering'
-import { packArtifact } from './pack'
-import { allocateRegisters } from './regalloc'
+import { bundle, detectModuleFormat, hasCJSSyntax, hasModuleSyntax } from './bundler'
+import { compileProgram } from './core-pipeline'
+import { CompileError, compileStep } from './diagnostics'
 import type { CompiledOutput, CompileOptions, ModuleFormat } from './types'
 
 function defaultOutputPath(inputPath: string, format: ModuleFormat): string {
@@ -16,7 +13,15 @@ function defaultOutputPath(inputPath: string, format: ModuleFormat): string {
 }
 
 export function resolveFormat(sourceFile: string, sourceCode: string, format?: string): ModuleFormat {
-  return resolveFormatInternal(sourceFile, sourceCode, format)
+  if (format !== undefined && format !== 'auto') {
+    if (format !== 'iife' && format !== 'esm' && format !== 'cjs') {
+      throw new CompileError(`Unknown output format '${format}'; expected auto, iife, esm, or cjs.`, {
+        code: 'INVALID_FORMAT', stage: 'input', filename: sourceFile,
+      })
+    }
+    return format
+  }
+  return detectModuleFormat(sourceFile, sourceCode)
 }
 
 export default function compile(
@@ -24,49 +29,50 @@ export default function compile(
   outputFile?: string | null,
   options: CompileOptions = {}
 ): CompiledOutput {
+  if (!options || typeof options !== 'object' || Array.isArray(options)) {
+    throw new CompileError('Options must be an object.', { code: 'INVALID_OPTION', stage: 'input' })
+  }
   if (options.obfuscate) {
-    throw new Error('obfuscate is reserved for script-vm-next v0.2 and is not implemented in v0.1')
+    throw new CompileError('obfuscate is reserved and is not implemented.', {
+      code: 'UNSUPPORTED_FEATURE', stage: 'input', filename: sourceFile,
+    })
   }
 
-  const sourceCode = fs.readFileSync(sourceFile, 'utf-8')
-  const format = resolveFormatInternal(sourceFile, sourceCode, options.format)
+  const sourceCode = compileStep('read', sourceFile, () => fs.readFileSync(sourceFile, 'utf-8'))
+  const format = resolveFormat(sourceFile, sourceCode, options.format)
 
   let codeToCompile = sourceCode
   let exportNames: string[] = []
+  let notifyIdentifier: string | undefined
+  let exportsIdentifier: string | undefined
   const shouldBundle = options.bundle !== false
 
-  if (shouldBundle) {
-    if (format === 'esm' && hasModuleSyntax(sourceCode)) {
-      const bundled = bundle(sourceFile, {
-        external: options.external,
-        basePath: options.basePath,
-        sourceType: 'module',
-      })
-      codeToCompile = bundled.code
-      exportNames = bundled.entryExports
-    } else if (format === 'cjs' && hasCJSSyntax(sourceCode)) {
-      const bundled = bundle(sourceFile, {
-        external: options.external,
-        basePath: options.basePath,
-        sourceType: 'script',
-      })
-      codeToCompile = bundled.code
-      exportNames = bundled.entryExports
-    }
+  if (shouldBundle && (
+    format === 'esm' && hasModuleSyntax(sourceCode) ||
+    format === 'cjs' && hasCJSSyntax(sourceCode)
+  )) {
+    const bundled = compileStep('bundle', sourceFile, () => bundle(sourceFile, {
+      external: options.external,
+      basePath: options.basePath,
+      sourceType: format === 'esm' ? 'module' : 'script',
+    }))
+    codeToCompile = bundled.code
+    exportNames = bundled.entryExports
+    notifyIdentifier = bundled.notifyIdentifier
+    exportsIdentifier = bundled.exportsIdentifier
   }
 
-  const sourceType = format === 'esm' ? 'module' : 'script'
-  const file = normalizeAst(parseSource(codeToCompile, sourceType))
-  const lowered = lowerToIR(file)
-  const allocated = allocateRegisters(lowered)
-  const artifact = emitBytecode(allocated, format, exportNames, Boolean(options.debug))
-  const code = packArtifact(artifact)
+  const output = compileProgram(codeToCompile, {
+    filename: sourceFile, format, debug: options.debug,
+    exportNames, exportsIdentifier, notifyIdentifier,
+  })
 
   if (typeof outputFile === 'string') {
-    fs.writeFileSync(outputFile, code)
+    compileStep('write', outputFile, () => fs.writeFileSync(outputFile, output.code))
   } else if (outputFile === undefined) {
-    fs.writeFileSync(defaultOutputPath(sourceFile, format), code)
+    const target = defaultOutputPath(sourceFile, format)
+    compileStep('write', target, () => fs.writeFileSync(target, output.code))
   }
 
-  return { code, artifact }
+  return output
 }

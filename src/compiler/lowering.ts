@@ -133,6 +133,8 @@ class ModuleLowerer {
   functions: FunctionBuilder[] = []
   pendingLabel?: string
 
+  constructor(private readonly exportsIdentifier = '__exports') {}
+
   compile(file: t.File): LoweredProgram {
     const entry = this.compileProgram(file.program)
     return {
@@ -162,7 +164,7 @@ class ModuleLowerer {
       this.compileStatement(statement, builder, builder.rootScope)
     }
 
-    const exportsBinding = builder.resolve(builder.rootScope, '__exports')
+    const exportsBinding = builder.resolve(builder.rootScope, this.exportsIdentifier)
     if (exportsBinding.kind === 'slot') {
       const result = builder.allocReg()
       builder.emit({ op: 'load_slot', dst: result, depth: exportsBinding.depth, slot: exportsBinding.slot })
@@ -884,13 +886,13 @@ class ModuleLowerer {
     }
 
     if (t.isNewExpression(expression)) {
+      const callee = this.compileExpression(expression.callee as t.Expression, builder, scope)
       const args = expression.arguments.map((arg) => {
         if (!t.isExpression(arg)) {
           throw new Error('Spread arguments are not supported in script-vm-next v0.1')
         }
         return this.compileExpression(arg, builder, scope)
       })
-      const callee = this.compileExpression(expression.callee as t.Expression, builder, scope)
       const dst = builder.allocReg()
       builder.emit({ op: 'new', dst, callee, args })
       return dst
@@ -994,12 +996,13 @@ class ModuleLowerer {
 
   private storeToTarget(
     left: t.LVal,
-    value: number,
+    right: t.Expression,
     builder: FunctionBuilder,
     scope: ScopeFrame
   ): number {
     if (t.isIdentifier(left)) {
       const binding = builder.resolve(scope, left.name)
+      const value = this.compileExpression(right, builder, scope)
       if (binding.kind === 'slot') {
         builder.emit({ op: 'store_slot', depth: binding.depth, slot: binding.slot, src: value })
       } else {
@@ -1012,6 +1015,9 @@ class ModuleLowerer {
       const property = left.computed
         ? this.compileExpression(left.property as t.Expression, builder, scope)
         : this.loadLiteral((left.property as t.Identifier).name, builder)
+      // Evaluate the reference before the RHS, but defer the actual write (and
+      // property-key coercion) until after the RHS has been evaluated.
+      const value = this.compileExpression(right, builder, scope)
       const dst = builder.allocReg()
       builder.emit({ op: 'set_prop', dst, object, property, value })
       return dst
@@ -1021,8 +1027,7 @@ class ModuleLowerer {
 
   private compileAssignment(expression: t.AssignmentExpression, builder: FunctionBuilder, scope: ScopeFrame): number {
     if (expression.operator === '=') {
-      const value = this.compileExpression(expression.right, builder, scope)
-      return this.storeToTarget(expression.left as t.LVal, value, builder, scope)
+      return this.storeToTarget(expression.left as t.LVal, expression.right, builder, scope)
     }
 
     // Compound assignment operators
@@ -1114,11 +1119,10 @@ class ModuleLowerer {
   }
 
   private compileUpdateExpression(expression: t.UpdateExpression, builder: FunctionBuilder, scope: ScopeFrame): number {
-    const one = this.loadLiteral(1, builder)
-
     if (t.isIdentifier(expression.argument)) {
-      const current = this.compileExpression(expression.argument, builder, scope)
-      const updated = this.binary(expression.operator === '++' ? '+' : '-', current, one, builder)
+      const value = this.compileExpression(expression.argument, builder, scope)
+      const current = this.unary('to_numeric', value, builder)
+      const updated = this.unary(expression.operator, current, builder)
       const binding = builder.resolve(scope, expression.argument.name)
       if (binding.kind === 'slot') {
         builder.emit({ op: 'store_slot', depth: binding.depth, slot: binding.slot, src: updated })
@@ -1133,9 +1137,10 @@ class ModuleLowerer {
       const property = expression.argument.computed
         ? this.compileExpression(expression.argument.property as t.Expression, builder, scope)
         : this.loadLiteral((expression.argument.property as t.Identifier).name, builder)
-      const current = builder.allocReg()
-      builder.emit({ op: 'get_prop', dst: current, object, property })
-      const updated = this.binary(expression.operator === '++' ? '+' : '-', current, one, builder)
+      const value = builder.allocReg()
+      builder.emit({ op: 'get_prop', dst: value, object, property })
+      const current = this.unary('to_numeric', value, builder)
+      const updated = this.unary(expression.operator, current, builder)
       const setDst = builder.allocReg()
       builder.emit({ op: 'set_prop', dst: setDst, object, property, value: updated })
       return expression.prefix ? updated : current
@@ -1145,13 +1150,6 @@ class ModuleLowerer {
   }
 
   private compileCallExpression(expression: t.CallExpression, builder: FunctionBuilder, scope: ScopeFrame): number {
-    const args = expression.arguments.map((arg) => {
-      if (!t.isExpression(arg)) {
-          throw new Error('Spread arguments are not supported in script-vm-next v0.1')
-      }
-      return this.compileExpression(arg, builder, scope)
-    })
-
     let callee: number
     let thisReg = -1
 
@@ -1167,6 +1165,13 @@ class ModuleLowerer {
       callee = this.compileExpression(expression.callee as t.Expression, builder, scope)
     }
 
+    const args = expression.arguments.map((arg) => {
+      if (!t.isExpression(arg)) {
+        throw new Error('Spread arguments are not supported in script-vm-next v0.1')
+      }
+      return this.compileExpression(arg, builder, scope)
+    })
+
     const dst = builder.allocReg()
     builder.emit({ op: 'call', dst, callee, thisReg, args })
     return dst
@@ -1175,6 +1180,12 @@ class ModuleLowerer {
   private binary(operator: string, left: number, right: number, builder: FunctionBuilder): number {
     const dst = builder.allocReg()
     builder.emit({ op: 'binary', dst, left, right, operator })
+    return dst
+  }
+
+  private unary(operator: string, value: number, builder: FunctionBuilder): number {
+    const dst = builder.allocReg()
+    builder.emit({ op: 'unary', dst, value, operator })
     return dst
   }
 
@@ -1204,7 +1215,7 @@ class ModuleLowerer {
   }
 }
 
-export function lowerToIR(file: t.File): LoweredProgram {
-  const lowerer = new ModuleLowerer()
+export function lowerToIR(file: t.File, exportsIdentifier = '__exports'): LoweredProgram {
+  const lowerer = new ModuleLowerer(exportsIdentifier)
   return lowerer.compile(file)
 }

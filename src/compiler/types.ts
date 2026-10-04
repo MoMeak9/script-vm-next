@@ -33,6 +33,8 @@ export interface ProgramArtifact {
   functions: FunctionMeta[]
   entryFunctionId: number
   exportNames: string[]
+  /** Generated, collision-free name for the ESM binding notification hook. */
+  notifyIdentifier?: string
   debugInfo?: {
     instructions: string[]
   }

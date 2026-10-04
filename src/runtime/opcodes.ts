@@ -71,6 +71,10 @@ export const UNARY_OPS = {
   '+': 3,
   typeof: 4,
   void: 5,
+  // Internal operations used to preserve ToNumeric and BigInt update semantics.
+  to_numeric: 6,
+  '++': 7,
+  '--': 8,
 } as const
 
 export type BinaryOperatorCode = (typeof BINARY_OPS)[keyof typeof BINARY_OPS]

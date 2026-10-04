@@ -10,6 +10,23 @@ function __scriptvmRun(metadata, globalObject) {
   var RETURN = 'return';
   var THROW = 'throw';
 
+  // Frontend-generated helpers use names that cannot occur as source bindings.
+  // Capture their intrinsics outside interpreted lexical scopes; a parameter
+  // named Object or WeakMap must not change private field operator semantics.
+  var intrinsicObject = Object;
+  var intrinsicWeakMap = WeakMap;
+  var intrinsicWeakSet = WeakSet;
+  var intrinsicTypeError = TypeError;
+  function readGlobal(name) {
+    switch (name) {
+      case '@script-vm/intrinsic/Object': return intrinsicObject;
+      case '@script-vm/intrinsic/WeakMap': return intrinsicWeakMap;
+      case '@script-vm/intrinsic/WeakSet': return intrinsicWeakSet;
+      case '@script-vm/intrinsic/TypeError': return intrinsicTypeError;
+      default: return globalObject[name];
+    }
+  }
+
   function binary(op, left, right) {
     switch (op) {
       case BINARY_OPS['+']: return left + right;
@@ -27,7 +44,7 @@ function __scriptvmRun(metadata, globalObject) {
       case BINARY_OPS['<=']: return left <= right;
       case BINARY_OPS['&&']: return left && right;
       case BINARY_OPS['||']: return left || right;
-      case BINARY_OPS['**']: return Math.pow(left, right);
+      case BINARY_OPS['**']: return left ** right;
       case BINARY_OPS['<<']: return left << right;
       case BINARY_OPS['>>']: return left >> right;
       case BINARY_OPS['>>>']: return left >>> right;
@@ -47,6 +64,11 @@ function __scriptvmRun(metadata, globalObject) {
       case UNARY_OPS['+']: return +value;
       case UNARY_OPS['typeof']: return typeof value;
       case UNARY_OPS['void']: return void value;
+      // Postfix update returns ToNumeric(value), including object-to-BigInt
+      // coercion. Only this local parameter is modified; user coercion runs once.
+      case UNARY_OPS['to_numeric']: return value++;
+      case UNARY_OPS['++']: return ++value;
+      case UNARY_OPS['--']: return --value;
       default: throw new Error('Unsupported unary operator code: ' + op);
     }
   }
@@ -140,24 +162,31 @@ function __scriptvmRun(metadata, globalObject) {
 
   function createClosure(functionId, parentEnv) {
     var meta = metadata.functions[functionId]
+    var closure
     if (meta.async && meta.generator) {
-      return async function*() {
+      closure = async function*() {
         return yield* executeAsyncGenerator(functionId, parentEnv, this, Array.prototype.slice.call(arguments), new.target)
       }
-    }
-    if (meta.async) {
-      return async function() {
+    } else if (meta.async) {
+      closure = async function() {
         return await executeAsync(functionId, parentEnv, this, Array.prototype.slice.call(arguments), new.target)
       }
-    }
-    if (meta.generator) {
-      return function*() {
+    } else if (meta.generator) {
+      closure = function*() {
         return yield* executeGenerator(functionId, parentEnv, this, Array.prototype.slice.call(arguments), new.target)
       }
+    } else {
+      closure = function() {
+        return executeSync(functionId, parentEnv, this, Array.prototype.slice.call(arguments), new.target)
+      }
     }
-    return function() {
-      return executeSync(functionId, parentEnv, this, Array.prototype.slice.call(arguments), new.target)
-    }
+    Object.defineProperty(closure, 'name', {
+      value: meta.name === null ? '' : meta.name,
+      configurable: true,
+      writable: false,
+      enumerable: false
+    })
+    return closure
   }
 
   function executeSync(functionId, parentEnv, thisValue, args, newTarget) {
@@ -226,7 +255,7 @@ function __scriptvmRun(metadata, globalObject) {
               break
             }
             case OPCODES.LOAD_GLOBAL:
-              regs[code[pc++]] = globalObject[metadata.constantPool[code[pc++]]]
+              regs[code[pc++]] = readGlobal(metadata.constantPool[code[pc++]])
               break
             case OPCODES.STORE_GLOBAL:
               globalObject[metadata.constantPool[code[pc++]]] = regs[code[pc++]]
@@ -339,7 +368,7 @@ function __scriptvmRun(metadata, globalObject) {
                 argv.push(regs[code[pc++]])
               }
               var receiver = thisIndex >= 0 ? regs[thisIndex] : globalObject
-              regs[callDst] = callFn.apply(receiver, argv)
+              regs[callDst] = Reflect.apply(callFn, receiver, argv)
               break
             }
             case OPCODES.NEW: {
@@ -465,7 +494,7 @@ function __scriptvmRun(metadata, globalObject) {
               break
             }
             case OPCODES.LOAD_GLOBAL:
-              regs[code[pc++]] = globalObject[metadata.constantPool[code[pc++]]]
+              regs[code[pc++]] = readGlobal(metadata.constantPool[code[pc++]])
               break
             case OPCODES.STORE_GLOBAL:
               globalObject[metadata.constantPool[code[pc++]]] = regs[code[pc++]]
@@ -576,7 +605,7 @@ function __scriptvmRun(metadata, globalObject) {
                 argv.push(regs[code[pc++]])
               }
               var receiver = thisIndex >= 0 ? regs[thisIndex] : globalObject
-              regs[callDst] = callFn.apply(receiver, argv)
+              regs[callDst] = Reflect.apply(callFn, receiver, argv)
               break
             }
             case OPCODES.NEW: {
@@ -704,7 +733,7 @@ function __scriptvmRun(metadata, globalObject) {
               break
             }
             case OPCODES.LOAD_GLOBAL:
-              regs[code[pc++]] = globalObject[metadata.constantPool[code[pc++]]]
+              regs[code[pc++]] = readGlobal(metadata.constantPool[code[pc++]])
               break
             case OPCODES.STORE_GLOBAL:
               globalObject[metadata.constantPool[code[pc++]]] = regs[code[pc++]]
@@ -815,7 +844,7 @@ function __scriptvmRun(metadata, globalObject) {
                 argv.push(regs[code[pc++]])
               }
               var receiver = thisIndex >= 0 ? regs[thisIndex] : globalObject
-              regs[callDst] = callFn.apply(receiver, argv)
+              regs[callDst] = Reflect.apply(callFn, receiver, argv)
               break
             }
             case OPCODES.NEW: {
@@ -951,7 +980,7 @@ function __scriptvmRun(metadata, globalObject) {
               break
             }
             case OPCODES.LOAD_GLOBAL:
-              regs[code[pc++]] = globalObject[metadata.constantPool[code[pc++]]]
+              regs[code[pc++]] = readGlobal(metadata.constantPool[code[pc++]])
               break
             case OPCODES.STORE_GLOBAL:
               globalObject[metadata.constantPool[code[pc++]]] = regs[code[pc++]]
@@ -1062,7 +1091,7 @@ function __scriptvmRun(metadata, globalObject) {
                 argv.push(regs[code[pc++]])
               }
               var receiver = thisIndex >= 0 ? regs[thisIndex] : globalObject
-              regs[callDst] = callFn.apply(receiver, argv)
+              regs[callDst] = Reflect.apply(callFn, receiver, argv)
               break
             }
             case OPCODES.NEW: {

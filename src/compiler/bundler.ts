@@ -176,394 +176,252 @@ function topoSort(modules: Map<string, ModuleInfo>): string[] {
 // Transform a single module's AST
 // ────────────────────────────────────────────────
 
+interface ExportBinding {
+  local: string
+  source?: string
+  namespace?: boolean
+  identity: string
+}
+
+type ModuleExports = Map<string, ExportBinding>
+
+function exportName(node: types.Identifier | types.StringLiteral): string {
+  return types.isIdentifier(node) ? node.name : node.value
+}
+
+function parseModule(source: string): types.File {
+  return parser.parse(source, { sourceType: 'module' })
+}
+
+function dependencyId(specifier: string, moduleId: string, entryDir: string): string {
+  const resolved = resolveModulePath(specifier, path.dirname(path.resolve(entryDir, moduleId)))
+  if (!resolved) throw new Error(`Cannot resolve module '${specifier}' from '${moduleId}'`)
+  return path.relative(entryDir, fs.realpathSync(resolved))
+}
+
+/** Resolve the public names before rewriting, including ambiguous star exports. */
+function collectModuleExports(
+  modules: Map<string, ModuleInfo>,
+  sortedIds: string[],
+  externals: Set<string>,
+  entryDir: string
+): Map<string, ModuleExports> {
+  const all = new Map<string, ModuleExports>()
+  for (const id of sortedIds) {
+    const ast = parseModule(modules.get(id)!.source)
+    const explicit: ModuleExports = new Map()
+    const imported = new Map<string, ExportBinding>()
+    const stars: string[] = []
+    const from = (source: string, local: string, namespace = false): ExportBinding => {
+      const internal = isRelative(source) && !externals.has(source)
+      const depId = internal ? dependencyId(source, id, entryDir) : source
+      const original = internal && !namespace ? all.get(depId)?.get(local) : undefined
+      if (internal && !namespace && !original) {
+        throw new Error(`Module '${source}' has no unambiguous export named '${local}' (imported by '${id}')`)
+      }
+      return { source, local, namespace, identity: original?.identity ?? `${depId}:${namespace ? '*' : local}` }
+    }
+    for (const node of ast.program.body) {
+      if (!types.isImportDeclaration(node)) continue
+      for (const spec of node.specifiers) {
+        const namespace = types.isImportNamespaceSpecifier(spec)
+        const name = types.isImportSpecifier(spec) ? exportName(spec.imported) : 'default'
+        imported.set(spec.local.name, from(node.source.value, name, namespace))
+      }
+    }
+    for (const node of ast.program.body) {
+      if (types.isExportAllDeclaration(node)) {
+        stars.push(node.source.value)
+      } else if (types.isExportDefaultDeclaration(node)) {
+        const decl = node.declaration
+        const local = (types.isFunctionDeclaration(decl) || types.isClassDeclaration(decl)) && decl.id
+          ? decl.id.name : '*default*'
+        explicit.set('default', { local, identity: `${id}:${local}` })
+      } else if (types.isExportNamedDeclaration(node)) {
+        if (node.declaration) {
+          for (const name of Object.keys(types.getOuterBindingIdentifiers(node.declaration))) {
+            explicit.set(name, { local: name, identity: `${id}:${name}` })
+          }
+        }
+        for (const spec of node.specifiers) {
+          const name = exportName(spec.exported)
+          if (types.isExportNamespaceSpecifier(spec)) {
+            explicit.set(name, from(node.source!.value, '*', true))
+          } else if (types.isExportSpecifier(spec)) {
+            const local = exportName(spec.local)
+            explicit.set(name, node.source ? from(node.source.value, local)
+              : imported.get(local) ?? { local, identity: `${id}:${local}` })
+          }
+        }
+      }
+    }
+    const merged: ModuleExports = new Map(explicit)
+    const ambiguous = new Set<string>()
+    for (const source of stars) {
+      if (!isRelative(source) || externals.has(source)) {
+        throw new Error(`Star re-exports from external module '${source}' are unsupported; list the exported names explicitly`)
+      }
+      const exports = all.get(dependencyId(source, id, entryDir))!
+      for (const [name, binding] of exports) {
+        if (name === 'default' || explicit.has(name) || ambiguous.has(name)) continue
+        const previous = merged.get(name)
+        if (previous && previous.identity !== binding.identity) {
+          merged.delete(name)
+          ambiguous.add(name)
+        } else {
+          merged.set(name, { local: name, source, identity: binding.identity })
+        }
+      }
+    }
+    all.set(id, merged)
+  }
+  return all
+}
+
 /**
- * Transform a module's source:
- *  - import { foo } from './x' → var foo = __m['x'].foo
- *  - import bar from './x'     → var bar = __m['x']['default']
- *  - import * as ns from './x' → var ns = __m['x']
- *  - import './x'              → (removed, side-effect handled by execution order)
- *  - import ext from 'lodash'  → var ext = require('lodash')
- *  - export function foo(){}   → function foo(){} __exports.foo = foo
- *  - export default expr       → __exports['default'] = expr
- *  - export const x = 1        → const x = 1; __exports.x = x
- *  - export { a, b as c }      → __exports.a = a; __exports.c = b
- *  - export { a } from './x'   → __exports.a = __m['x'].a
+ * Keep local bindings in place and expose them through getters. Import reads are
+ * rewritten at their binding's reference paths, so shadowed names remain local.
+ * A write notification updates the native ESM wrapper after an exported binding
+ * changes, including changes made by an asynchronous or escaped closure.
  */
 function transformModule(
   source: string,
   moduleId: string,
   entryId: string,
   externals: Set<string>,
-  entryDir: string
+  entryDir: string,
+  exports: ModuleExports,
+  notifyIdentifier: string,
+  registryIdentifier: string,
+  exportsIdentifier: string
 ): { code: string; exportNames: string[] } {
-  const ast = parser.parse(source, {
-    sourceType: 'module',
-    plugins: [
-      'classProperties',
-      'classPrivateProperties',
-      'classPrivateMethods',
-      'optionalChaining',
-      'nullishCoalescingOperator',
-    ],
-  })
+  const ast = parseModule(source)
+  let program: import('@babel/traverse').NodePath<types.Program>
+  traverse(ast, { Program(p) { program = p; p.stop() } })
 
-  const exportNames: string[] = []
-  const moduleDir = path.dirname(path.resolve(entryDir, moduleId))
+  const prelude: types.Statement[] = []
+  const externalNamespaces = new Map<string, types.Identifier>()
+  const namespaceFor = (specifier: string): types.Expression => {
+    if (isRelative(specifier) && !externals.has(specifier)) {
+      return types.memberExpression(types.identifier(registryIdentifier), types.stringLiteral(dependencyId(specifier, moduleId, entryDir)), true)
+    }
+    let temp = externalNamespaces.get(specifier)
+    if (!temp) {
+      temp = program!.scope.generateUidIdentifier('external')
+      externalNamespaces.set(specifier, temp)
+      prelude.push(types.variableDeclaration('var', [types.variableDeclarator(temp,
+        types.callExpression(types.identifier('require'), [types.stringLiteral(specifier)]))]))
+    }
+    return types.cloneNode(temp)
+  }
+  const property = (object: types.Expression, name: string) =>
+    types.memberExpression(object, types.stringLiteral(name), true)
+
+  // Instrument local writes before removing the import/export declarations.
+  const publishedBindings = new Set([...exports.values()]
+    .filter(binding => !binding.source && binding.local !== '*default*')
+    .map(binding => program!.scope.getBinding(binding.local)))
+  const notify = (expression: types.Expression): types.CallExpression =>
+    types.callExpression(types.identifier(notifyIdentifier), [expression])
+  const changesExport = (node: types.Node, scope: import('@babel/traverse').Scope): boolean =>
+    Object.keys(types.getBindingIdentifiers(node)).some(name => {
+      const binding = scope.getBinding(name)
+      return binding !== undefined && publishedBindings.has(binding)
+    })
+  traverse(ast, {
+    AssignmentExpression: {
+      exit(p) {
+        if (changesExport(p.node.left, p.scope)) {
+          if (types.isPattern(p.node.left)) {
+            throw new Error(`Destructuring assignment to an exported binding is unsupported in '${moduleId}'; use separate assignments`)
+          }
+          p.replaceWith(notify(p.node)); p.skip()
+        }
+      },
+    },
+    UpdateExpression: {
+      exit(p) {
+        if (changesExport(p.node.argument, p.scope)) { p.replaceWith(notify(p.node)); p.skip() }
+      },
+    },
+    'ForInStatement|ForOfStatement'(p) {
+      const node = p.node as types.ForInStatement | types.ForOfStatement
+      if (changesExport(node.left, p.scope)) {
+        const target = types.isVariableDeclaration(node.left) ? node.left.declarations[0].id : node.left
+        if (types.isPattern(target)) {
+          throw new Error(`Destructuring loop assignment to an exported binding is unsupported in '${moduleId}'; use separate assignments`)
+        }
+        const body = types.isBlockStatement(node.body) ? node.body : types.blockStatement([node.body])
+        body.body.unshift(types.expressionStatement(notify(types.unaryExpression('void', types.numericLiteral(0)))))
+        node.body = body
+      }
+    },
+  })
 
   traverse(ast, {
     ImportDeclaration(p) {
-      const spec = p.node.source.value
-      const specifiers = p.node.specifiers
-
-      if (isRelative(spec) && !externals.has(spec)) {
-        // Relative import — reference __m registry
-        const resolved = resolveModulePath(spec, moduleDir)
-        const depId = path.relative(entryDir, resolved!)
-        const replacements: types.Statement[] = []
-
-        for (const s of specifiers) {
-          if (types.isImportDefaultSpecifier(s)) {
-            // import bar from './x' → var bar = __m['depId']['default']
-            replacements.push(
-              types.variableDeclaration('var', [
-                types.variableDeclarator(
-                  s.local,
-                  types.memberExpression(
-                    types.memberExpression(
-                      types.identifier('__m'),
-                      types.stringLiteral(depId),
-                      true
-                    ),
-                    types.stringLiteral('default'),
-                    true
-                  )
-                ),
-              ])
-            )
-          } else if (types.isImportNamespaceSpecifier(s)) {
-            // import * as ns from './x' → var ns = __m['depId']
-            replacements.push(
-              types.variableDeclaration('var', [
-                types.variableDeclarator(
-                  s.local,
-                  types.memberExpression(
-                    types.identifier('__m'),
-                    types.stringLiteral(depId),
-                    true
-                  )
-                ),
-              ])
-            )
-          } else if (types.isImportSpecifier(s)) {
-            // import { foo } from './x' → var foo = __m['depId'].foo
-            const imported = types.isIdentifier(s.imported) ? s.imported.name : s.imported.value
-            replacements.push(
-              types.variableDeclaration('var', [
-                types.variableDeclarator(
-                  s.local,
-                  types.memberExpression(
-                    types.memberExpression(
-                      types.identifier('__m'),
-                      types.stringLiteral(depId),
-                      true
-                    ),
-                    types.identifier(imported)
-                  )
-                ),
-              ])
-            )
-          }
+      const specifier = p.node.source.value
+      const namespace = namespaceFor(specifier)
+      for (const spec of p.node.specifiers) {
+        const binding = p.scope.getBinding(spec.local.name)!
+        if (binding.constantViolations.length) {
+          throw new Error(`Cannot assign to imported binding '${spec.local.name}' in '${moduleId}'`)
         }
-
-        if (replacements.length > 0) {
-          p.replaceWithMultiple(replacements)
+        let access: types.Expression
+        if (types.isImportNamespaceSpecifier(spec)) {
+          access = namespace
+        } else if (types.isImportDefaultSpecifier(spec)) {
+          // Preserve the existing CommonJS interoperability rule for externals.
+          access = isRelative(specifier) && !externals.has(specifier) ? property(namespace, 'default') : namespace
         } else {
-          // Side-effect-only import
-          p.remove()
+          access = property(namespace, exportName(spec.imported))
         }
-      } else {
-        // External (bare) import → require()
-        const replacements: types.Statement[] = []
-        const reqCall = types.callExpression(types.identifier('require'), [
-          types.stringLiteral(spec),
-        ])
-
-        if (specifiers.length === 0) {
-          // import 'lodash' → require('lodash')
-          replacements.push(types.expressionStatement(reqCall))
-        } else if (
-          specifiers.length === 1 &&
-          types.isImportDefaultSpecifier(specifiers[0])
-        ) {
-          // import lodash from 'lodash' → var lodash = require('lodash')
-          replacements.push(
-            types.variableDeclaration('var', [
-              types.variableDeclarator(specifiers[0].local, reqCall),
-            ])
-          )
-        } else if (
-          specifiers.length === 1 &&
-          types.isImportNamespaceSpecifier(specifiers[0])
-        ) {
-          // import * as _ from 'lodash' → var _ = require('lodash')
-          replacements.push(
-            types.variableDeclaration('var', [
-              types.variableDeclarator(specifiers[0].local, reqCall),
-            ])
-          )
-        } else {
-          // import { ref, computed } from 'vue' → var _vue = require('vue'); var ref = _vue.ref; ...
-          const tmpId = types.identifier('_ext_' + spec.replace(/[^a-zA-Z0-9]/g, '_'))
-          replacements.push(
-            types.variableDeclaration('var', [types.variableDeclarator(tmpId, reqCall)])
-          )
-          for (const s of specifiers) {
-            if (types.isImportSpecifier(s)) {
-              const imported = types.isIdentifier(s.imported) ? s.imported.name : s.imported.value
-              replacements.push(
-                types.variableDeclaration('var', [
-                  types.variableDeclarator(
-                    s.local,
-                    types.memberExpression(tmpId, types.identifier(imported))
-                  ),
-                ])
-              )
-            }
+        for (const reference of binding.referencePaths) {
+          if (reference.parentPath.isExportSpecifier()) continue
+          let replacement = types.cloneNode(access, true)
+          if ((reference.parentPath.isCallExpression() || reference.parentPath.isOptionalCallExpression() || reference.parentPath.isTaggedTemplateExpression())
+            && (reference.key === 'callee' || reference.key === 'tag')) {
+            replacement = types.sequenceExpression([types.numericLiteral(0), replacement])
           }
+          reference.replaceWith(replacement)
         }
-
-        p.replaceWithMultiple(replacements)
       }
+      p.remove()
     },
-
     ExportDefaultDeclaration(p) {
-      const decl = p.node.declaration
-      exportNames.push('default')
-
-      if (
-        types.isFunctionDeclaration(decl) ||
-        types.isClassDeclaration(decl)
-      ) {
-        // export default function foo(){} → function foo(){} __exports['default'] = foo
-        const name = decl.id ? decl.id.name : '_default'
-        if (!decl.id) {
-          decl.id = types.identifier('_default')
-        }
-        p.replaceWithMultiple([
-          decl as types.Statement,
-          types.expressionStatement(
-            types.assignmentExpression(
-              '=',
-              types.memberExpression(
-                types.identifier('__exports'),
-                types.stringLiteral('default'),
-                true
-              ),
-              types.identifier(name)
-            )
-          ),
-        ])
+      const declaration = p.node.declaration
+      if (types.isFunctionDeclaration(declaration) || types.isClassDeclaration(declaration)) {
+        declaration.id ??= program!.scope.generateUidIdentifier('default')
+        exports.get('default')!.local = declaration.id.name
+        p.replaceWith(declaration)
       } else {
-        // export default expr → __exports['default'] = expr
-        p.replaceWith(
-          types.expressionStatement(
-            types.assignmentExpression(
-              '=',
-              types.memberExpression(
-                types.identifier('__exports'),
-                types.stringLiteral('default'),
-                true
-              ),
-              decl as types.Expression
-            )
-          )
-        )
+        const temp = program!.scope.generateUidIdentifier('default')
+        exports.get('default')!.local = temp.name
+        p.replaceWith(types.variableDeclaration('const', [types.variableDeclarator(temp, declaration as types.Expression)]))
       }
     },
-
     ExportNamedDeclaration(p) {
-      const { declaration, specifiers, source: src } = p.node
-
-      if (src) {
-        // Re-export: export { a, b as c } from './x'
-        const spec = src.value
-        const replacements: types.Statement[] = []
-
-        if (isRelative(spec) && !externals.has(spec)) {
-          const resolved = resolveModulePath(spec, moduleDir)
-          const depId = path.relative(entryDir, resolved!)
-          for (const s of specifiers) {
-            if (types.isExportSpecifier(s)) {
-              const local = s.local.name
-              const exported = types.isIdentifier(s.exported) ? s.exported.name : (s.exported as types.StringLiteral).value
-              exportNames.push(exported)
-              replacements.push(
-                types.expressionStatement(
-                  types.assignmentExpression(
-                    '=',
-                    types.memberExpression(
-                      types.identifier('__exports'),
-                      types.identifier(exported)
-                    ),
-                    types.memberExpression(
-                      types.memberExpression(
-                        types.identifier('__m'),
-                        types.stringLiteral(depId),
-                        true
-                      ),
-                      types.identifier(local)
-                    )
-                  )
-                )
-              )
-            }
-          }
-        } else {
-          // Re-export from external
-          const tmpId = types.identifier('_ext_' + spec.replace(/[^a-zA-Z0-9]/g, '_'))
-          replacements.push(
-            types.variableDeclaration('var', [
-              types.variableDeclarator(
-                tmpId,
-                types.callExpression(types.identifier('require'), [types.stringLiteral(spec)])
-              ),
-            ])
-          )
-          for (const s of specifiers) {
-            if (types.isExportSpecifier(s)) {
-              const local = s.local.name
-              const exported = types.isIdentifier(s.exported) ? s.exported.name : (s.exported as types.StringLiteral).value
-              exportNames.push(exported)
-              replacements.push(
-                types.expressionStatement(
-                  types.assignmentExpression(
-                    '=',
-                    types.memberExpression(
-                      types.identifier('__exports'),
-                      types.identifier(exported)
-                    ),
-                    types.memberExpression(tmpId, types.identifier(local))
-                  )
-                )
-              )
-            }
-          }
-        }
-
-        p.replaceWithMultiple(replacements)
-        return
-      }
-
-      if (declaration) {
-        // export function foo(){} or export const x = 1
-        const replacements: types.Statement[] = [declaration]
-
-        if (types.isVariableDeclaration(declaration)) {
-          for (const d of declaration.declarations) {
-            if (types.isIdentifier(d.id)) {
-              exportNames.push(d.id.name)
-              replacements.push(
-                types.expressionStatement(
-                  types.assignmentExpression(
-                    '=',
-                    types.memberExpression(
-                      types.identifier('__exports'),
-                      types.identifier(d.id.name)
-                    ),
-                    d.id
-                  )
-                )
-              )
-            }
-          }
-        } else if (
-          types.isFunctionDeclaration(declaration) ||
-          types.isClassDeclaration(declaration)
-        ) {
-          const name = declaration.id!.name
-          exportNames.push(name)
-          replacements.push(
-            types.expressionStatement(
-              types.assignmentExpression(
-                '=',
-                types.memberExpression(
-                  types.identifier('__exports'),
-                  types.identifier(name)
-                ),
-                types.identifier(name)
-              )
-            )
-          )
-        }
-
-        p.replaceWithMultiple(replacements)
-        return
-      }
-
-      // export { a, b as c }
-      const replacements: types.Statement[] = []
-      for (const s of specifiers) {
-        if (types.isExportSpecifier(s)) {
-          const local = s.local.name
-          const exported = types.isIdentifier(s.exported) ? s.exported.name : (s.exported as types.StringLiteral).value
-          exportNames.push(exported)
-          replacements.push(
-            types.expressionStatement(
-              types.assignmentExpression(
-                '=',
-                types.memberExpression(
-                  types.identifier('__exports'),
-                  types.identifier(exported)
-                ),
-                types.identifier(local)
-              )
-            )
-          )
-        }
-      }
-      p.replaceWithMultiple(replacements)
+      if (p.node.declaration) p.replaceWith(p.node.declaration)
+      else p.remove()
     },
-
-    ExportAllDeclaration(p) {
-      const spec = p.node.source.value
-      if (isRelative(spec) && !externals.has(spec)) {
-        const resolved = resolveModulePath(spec, moduleDir)
-        const depId = path.relative(entryDir, resolved!)
-        // export * from './x' → Object.assign(__exports, __m['depId'])
-        p.replaceWith(
-          types.expressionStatement(
-            types.callExpression(
-              types.memberExpression(types.identifier('Object'), types.identifier('assign')),
-              [
-                types.identifier('__exports'),
-                types.memberExpression(
-                  types.identifier('__m'),
-                  types.stringLiteral(depId),
-                  true
-                ),
-              ]
-            )
-          )
-        )
-      } else {
-        p.replaceWith(
-          types.expressionStatement(
-            types.callExpression(
-              types.memberExpression(types.identifier('Object'), types.identifier('assign')),
-              [
-                types.identifier('__exports'),
-                types.callExpression(types.identifier('require'), [
-                  types.stringLiteral(spec),
-                ]),
-              ]
-            )
-          )
-        )
-      }
-    },
+    ExportAllDeclaration(p) { p.remove() },
   })
 
-  return { code: generator(ast).code, exportNames }
+  const getters: types.Statement[] = []
+  for (const [name, binding] of exports) {
+    const value = binding.source
+      ? binding.namespace ? namespaceFor(binding.source) : property(namespaceFor(binding.source), binding.local)
+      : types.identifier(binding.local)
+    getters.push(types.expressionStatement(types.callExpression(
+      types.memberExpression(types.memberExpression(types.identifier(notifyIdentifier), types.identifier('Object')), types.identifier('defineProperty')),
+      [types.identifier(exportsIdentifier), types.stringLiteral(name), types.objectExpression([
+        types.objectProperty(types.identifier('enumerable'), types.booleanLiteral(true)),
+        types.objectProperty(types.identifier('get'), types.functionExpression(null, [], types.blockStatement([types.returnStatement(value)]))),
+      ])]
+    )))
+  }
+  ast.program.body.unshift(...prelude, ...getters)
+  return { code: generator(ast).code, exportNames: [...exports.keys()] }
 }
 
 // ────────────────────────────────────────────────
@@ -853,6 +711,10 @@ export interface BundleResult {
   code: string
   /** Export names from the entry module (for ESM output wrapping) */
   entryExports: string[]
+  /** Private runtime hook used to refresh native ESM bindings. */
+  notifyIdentifier?: string
+  /** Generated name of the entry namespace returned by the VM. */
+  exportsIdentifier?: string
 }
 
 /**
@@ -874,21 +736,53 @@ export function bundle(entryPath: string, options: BundleOptions = {}): BundleRe
   const sortedIds = topoSort(modules)
   const entryId = path.relative(entryDir, absEntry)
 
-  // Choose transform function
-  const transform = isCJS ? transformCJSModule : transformModule
+  const moduleExports = isCJS ? undefined : collectModuleExports(modules, sortedIds, externals, entryDir)
+  const usedNames = new Set<string>()
+  if (!isCJS) {
+    for (const mod of modules.values()) {
+      traverse(parseModule(mod.source), { Identifier(p) { usedNames.add(p.node.name) }, noScope: true })
+    }
+  }
+  const uniqueName = (preferred: string) => {
+    let name = preferred
+    while (usedNames.has(name)) name += '_'
+    usedNames.add(name)
+    return name
+  }
+  const notifyIdentifier = uniqueName('__scriptvmNotifyExports')
+  const registryIdentifier = isCJS ? '__m' : uniqueName('__m')
+  const exportsIdentifier = isCJS ? '__exports' : uniqueName('__exports')
+  const transform = (source: string, id: string, entry: string, external: Set<string>, dir: string) =>
+    isCJS ? transformCJSModule(source, id, entry, external, dir)
+      : transformModule(source, id, entry, external, dir, moduleExports!.get(id)!, notifyIdentifier, registryIdentifier, exportsIdentifier)
+  const notifyMetadata = isCJS ? {} : { notifyIdentifier, exportsIdentifier }
+
+  // VM property stores use Reflect.set. A namespace proxy enforces the ESM
+  // read-only contract even when a namespace escapes through a function call.
+  // Host intrinsics come from the private bridge, avoiding user bindings while
+  // preserving observable names of user function and class declarations.
+  const hostObject = `${notifyIdentifier}.Object`
+  const namespaceInit = isCJS ? '{}' : `${hostObject}.create(null)`
+  const namespaceResult = isCJS ? exportsIdentifier : `new ${notifyIdentifier}.Proxy(${hostObject}.preventExtensions(${exportsIdentifier}), {
+    set: function() { throw new ${notifyIdentifier}.TypeError('Cannot assign to a module namespace'); },
+    deleteProperty: function(target, name) {
+      if (${hostObject}.prototype.hasOwnProperty.call(target, name)) throw new ${notifyIdentifier}.TypeError('Cannot delete a module export');
+      return true;
+    }
+  })`
 
   // If only one module (no imports), just transform in-place
   if (sortedIds.length === 1) {
     const mod = modules.get(sortedIds[0])!
     const { code, exportNames } = transform(mod.source, mod.id, entryId, externals, entryDir)
     // Wrap with __exports for consistency
-    const wrapped = `var __exports = {};\n${code}\n`
-    return { code: wrapped, entryExports: exportNames }
+    const wrapped = `var ${exportsIdentifier} = ${namespaceInit};\n${code}\n${exportsIdentifier} = ${namespaceResult};\n`
+    return { code: wrapped, entryExports: exportNames, ...notifyMetadata }
   }
 
   // Build the bundled code
   const parts: string[] = []
-  parts.push('var __m = {};')
+  parts.push(`var ${registryIdentifier} = {};`)
 
   let entryExports: string[] = []
 
@@ -900,21 +794,22 @@ export function bundle(entryPath: string, options: BundleOptions = {}): BundleRe
     if (isEntry) {
       entryExports = exportNames
       // Entry module: inject __exports var, then inline code
-      parts.push(`var __exports = {};`)
+      parts.push(`var ${exportsIdentifier} = ${namespaceInit};`)
       parts.push(code)
+      parts.push(`${exportsIdentifier} = ${namespaceResult};`)
     } else {
       // Dependency module: wrap in IIFE, store in __m registry
       parts.push(
-        `__m[${JSON.stringify(id)}] = (function() {\n` +
-        `  var __exports = {};\n` +
+        `${registryIdentifier}[${JSON.stringify(id)}] = (function() {\n` +
+        `  var ${exportsIdentifier} = ${namespaceInit};\n` +
         `  ${code}\n` +
-        `  return __exports;\n` +
+        `  return ${namespaceResult};\n` +
         `})();`
       )
     }
   }
 
-  return { code: parts.join('\n'), entryExports }
+  return { code: parts.join('\n'), entryExports, ...notifyMetadata }
 }
 
 /**
