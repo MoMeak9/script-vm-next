@@ -1,4 +1,6 @@
-import { describe, it } from 'vitest'
+import { runInNewContext } from 'node:vm'
+import { describe, expect, it } from 'vitest'
+import { compileSource } from '../core'
 import { expectEquivalent } from './differential'
 
 describe('internal class compatibility', () => {
@@ -143,13 +145,21 @@ describe('internal class compatibility', () => {
   })
 
   it('evaluates derived return rules after finally completion', () => {
-    expectEquivalent(`
+    const source = `
       var log = [];
       class A { constructor() { this.value = 2; } }
       class B extends A { constructor() { try { return; } finally { super(); log.push('finally'); } } }
       class C extends A { constructor() { try { return 1; } finally { return { value: 8 }; } } }
       log.push(new B().value, new C().value); globalThis.__result = log;
-    `)
+    `
+    // [[Construct]] reads the derived this binding after evaluation of the body,
+    // including finally. Node 20.20.2's native V8 incorrectly reads it earlier;
+    // assert the specification result on every supported host instead of using
+    // that older engine as the oracle. Node 22/24 native execution agrees.
+    // https://tc39.es/ecma262/#sec-ecmascript-function-objects-construct-argumentslist-newtarget
+    const sandbox: { __result?: unknown } = {}
+    runInNewContext(compileSource(source).code, sandbox, { timeout: 1000 })
+    expect(sandbox.__result).toEqual(['finally', 2, 8])
   })
 
   it.each([

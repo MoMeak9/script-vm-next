@@ -81,6 +81,8 @@ Unlisted ES2016+ syntax and APIs are not part of a general compatibility promise
 
 `pnpm test` builds the library and runs Vitest; `pnpm test:unit` reuses an existing build. The [differential helper](../src/__tests__/differential.ts) runs synchronous source and generated code in fresh native VM contexts, captures structured-cloneable results, console observations, and exception names, and applies an execution deadline. It is a targeted regression tool: it does not compare every possible side effect or asynchronous scheduling behavior. Fixtures with uncloneable log values fail the harness rather than count as equivalent program errors. Module tests run separate Node processes with the native ESM loader to avoid Vitest's import transformations changing the reference behavior.
 
+An older host engine is not always a correct oracle. Node 20.20.2's native derived constructor checks `this` too early for `try { return; } finally { super(); }`; Node 22/24 and the specification complete `finally` first. That regression asserts the specification result for compiled code on every supported Node version, without skipping VM execution.
+
 The [CI workflow](../.github/workflows/ci.yml) defines compiler checks on Node.js 20, 22, and 24 with pnpm 10.34.6, a frozen lockfile, and dependency lifecycle scripts disabled. Node.js 24 also runs lint, type checks, independent tarball-consumer tests, and Chromium playground tests. The shared validation workflow gates both Pages deployment and npm release. Development uses Node.js 20.19+, 22.13+, or 24 to meet the build and lint tools' requirements. A workflow definition is not evidence of a successful run: use the MR checks for the result on each Node version.
 
 Before claiming a broader compatibility level:
