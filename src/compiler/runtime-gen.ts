@@ -164,7 +164,7 @@ function __scriptvmRun(metadata, globalObject) {
 
   function assertInitialized(targetEnv, slot) {
     if (!targetEnv.states[slot]) {
-      throw new ReferenceError("Cannot access '" + targetEnv.slotNames[slot] + "' before initialization")
+      throw new intrinsicReferenceError("Cannot access '" + targetEnv.slotNames[slot] + "' before initialization")
     }
   }
 
@@ -182,7 +182,7 @@ function __scriptvmRun(metadata, globalObject) {
     }
     assertInitialized(targetEnv, slot)
     if (kind === 'const') {
-      throw new TypeError("Assignment to constant variable '" + targetEnv.slotNames[slot] + "'")
+      throw new intrinsicTypeError("Assignment to constant variable '" + targetEnv.slotNames[slot] + "'")
     }
     targetEnv.values[slot] = value
     return value

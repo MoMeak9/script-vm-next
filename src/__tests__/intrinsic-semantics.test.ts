@@ -191,3 +191,24 @@ it('keeps the module notification global proxy independent of Reflect.get and Re
   vm.runInContext(code, context, { timeout: 1000 })
   expect(context.__result).toBe(7)
 })
+
+
+describe('captured semantic exception constructors', () => {
+  for (const [constructor, operation] of [
+    ['ReferenceError', 'let value = value;'],
+    ['TypeError', 'const value = 1; value = 2;'],
+  ]) {
+    it(`uses the original ${constructor} for VM binding errors while public construction stays live`, () => {
+      expectEquivalent(`
+        const original = ${constructor};
+        const replacement = function() { this.replacement = true; };
+        try {
+          globalThis.${constructor} = replacement;
+          const explicit = new ${constructor}();
+          try { ${operation} }
+          catch (error) { globalThis.__result = [error instanceof original, error.name, explicit.replacement]; }
+        } finally { globalThis.${constructor} = original; }
+      `)
+    })
+  }
+})

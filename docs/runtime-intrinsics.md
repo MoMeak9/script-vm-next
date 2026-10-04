@@ -11,6 +11,7 @@ The captured operations cover:
 - Function calls and construction in ordinary, async, generator, and async
   generator execution.
 - Function metadata and generator prototype initialization.
+- Original ReferenceError and TypeError constructors for TDZ and const writes.
 - Interpreter array allocation, argument-list construction, and parameter copies.
 - Implicit global writes and module notification proxy global lookup.
 - Internal completion-record tracking used by the existing generator runtime.
