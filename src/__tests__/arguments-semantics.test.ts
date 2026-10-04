@@ -207,7 +207,7 @@ describe('arguments object reflection and unmapped behavior', () => {
   })
   it('captures arguments lexically inside arrows and allows reassignment', () => {
     expectEquivalent(`
-      function f(a) { const read = () => arguments[0]; arguments = [3]; return read(); }
+      function f(a) { const read = () => arguments[0]; const nested = () => () => arguments[0]; arguments = [3]; return [read(), nested()()]; }
       globalThis.__result = f(1);
     `)
   })
