@@ -29,10 +29,17 @@ with `break`, `continue`, a different return, or a new exception. Pending
 completions survive a yielding finalizer, nested finalizers run in order, and
 iterator cleanup executes when control leaves a `for...of` loop.
 
-Delegated yields use a small native protocol shell around the delegated iterator.
-The shell supplies iterator-method validation and missing-throw cleanup; all user
-statements and surrounding completion handling remain inside the VM. Async
-wrappers retain native request queuing and promise handling.
+Delegated yields use a private protocol adapter that forwards unfinished iterator
+results unchanged, without eagerly reading their value. Native `yield*` validates
+results; the adapter translates completion records into iterator methods and
+performs missing-throw cleanup. All user statements and surrounding completion
+handling remain inside the VM. Async wrappers retain native request queuing,
+promise handling, and async-from-sync delegation.
+
+Known limitation: the existing layered generator interpreter can read an
+unfinished delegated result's `done` getter more than once while forwarding it.
+Accessor side effects that depend on the exact read count remain a conformance
+gap; ordinary data-property iterator results are unaffected.
 
 ## Labels
 

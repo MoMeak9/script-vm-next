@@ -164,6 +164,32 @@ function __scriptvmRun(metadata, globalObject) {
     };
   }
 
+  function generatorDelegate(record) {
+    var state = { type: NORMAL, started: false, iterator: undefined };
+    state.iterator = {
+      next: function(resume) {
+        if (!state.started) {
+          state.started = true;
+          return iteratorIntrinsicApply(record.next, record.iterator, [undefined]);
+        }
+        state.type = resume.type;
+        if (resume.type === NORMAL) return iteratorIntrinsicApply(record.next, record.iterator, [resume.value]);
+        var method = record.iterator[resume.type];
+        if (method == null) {
+          if (resume.type === THROW) {
+            iteratorClose(record, false);
+            throw new intrinsicTypeError('The iterator does not provide a throw method');
+          }
+          return { value: resume.value, done: true };
+        }
+        return iteratorIntrinsicApply(method, record.iterator, [resume.value]);
+      },
+      [intrinsicIteratorSymbol]: function() { return this; },
+      [intrinsicAsyncIteratorSymbol]: function() { return this; }
+    };
+    return state;
+  }
+
   function assertInitialized(targetEnv, slot) {
     if (!targetEnv.states[slot]) {
       throw new ReferenceError("Cannot access '" + targetEnv.slotNames[slot] + "' before initialization")
@@ -1029,22 +1055,13 @@ function __scriptvmRun(metadata, globalObject) {
               var yieldSrc = code[pc++]
               var delegate = code[pc++]
               if (delegate) {
-                // A native delegation shell supplies the spec iterator protocol
-                // (method validation, missing throw cleanup, and async fallback).
-                // Only the VM owns the surrounding user control flow.
-                var delegatedValue = regs[yieldSrc]
-                var delegatedIterator = (function*() { return yield* delegatedValue })()
-                var delegatedStep = delegatedIterator.next()
-                var resumeType = NORMAL
-                while (!delegatedStep.done) {
-                  var resume = yield delegatedStep.value
-                  resumeType = resume.type
-                  delegatedStep = (resume.type === RETURN ? delegatedIterator.return(resume.value)
-                    : resume.type === THROW ? delegatedIterator.throw(resume.value)
-                    : delegatedIterator.next(resume.value))
-                }
-                if (resumeType === RETURN) return completion(RETURN, delegatedStep.value)
-                regs[yieldDst] = delegatedStep.value
+                // yield* forwards an unfinished IteratorResult itself, without
+                // reading its value. Keep native forwarding while translating
+                // our private resume packets into iterator protocol operations.
+                var delegation = generatorDelegate(iteratorStart(regs[yieldSrc]))
+                var delegatedValue = yield* delegation.iterator
+                if (delegation.type === RETURN) return completion(RETURN, delegatedValue)
+                regs[yieldDst] = delegatedValue
               } else {
                 var resume = yield regs[yieldSrc]
                 if (resume.type !== NORMAL) return resume
@@ -1312,22 +1329,14 @@ function __scriptvmRun(metadata, globalObject) {
               var yieldSrc = code[pc++]
               var delegate = code[pc++]
               if (delegate) {
-                // A native delegation shell supplies the spec iterator protocol
-                // (method validation, missing throw cleanup, and async fallback).
-                // Only the VM owns the surrounding user control flow.
-                var delegatedValue = regs[yieldSrc]
-                var delegatedIterator = (async function*() { return yield* delegatedValue })()
-                var delegatedStep = await delegatedIterator.next()
-                var resumeType = NORMAL
-                while (!delegatedStep.done) {
-                  var resume = yield delegatedStep.value
-                  resumeType = resume.type
-                  delegatedStep = await (resume.type === RETURN ? delegatedIterator.return(resume.value)
-                    : resume.type === THROW ? delegatedIterator.throw(resume.value)
-                    : delegatedIterator.next(resume.value))
-                }
-                if (resumeType === RETURN) return completion(RETURN, delegatedStep.value)
-                regs[yieldDst] = delegatedStep.value
+                // The native async shell supplies async-from-sync fallback and
+                // awaits iterator protocol results without executing user code.
+                var delegatedSource = regs[yieldSrc]
+                var delegatedIterator = (async function*() { return yield* delegatedSource })()
+                var delegation = generatorDelegate({ iterator: delegatedIterator, next: delegatedIterator.next, done: false })
+                var delegatedValue = yield* delegation.iterator
+                if (delegation.type === RETURN) return completion(RETURN, delegatedValue)
+                regs[yieldDst] = delegatedValue
               } else {
                 var resume = yield regs[yieldSrc]
                 if (resume.type !== NORMAL) return resume

@@ -255,3 +255,45 @@ describe('unlabeled breaks inside labeled statements', () => {
     `)
   })
 })
+
+describe('delegated iterator result forwarding', () => {
+  for (const action of ['next', 'throw', 'return']) {
+    it(`forwards the original unfinished result from delegated ${action} without reading value`, () => {
+      expectEquivalent(`
+        const events = [];
+        const result = { done: false, get value() { events.push('value'); throw new Error('must stay lazy'); } };
+        const iterable = { [Symbol.iterator]() { return this; }, next() { events.push('next'); return result; },
+          throw(value) { events.push(['throw', value]); return result; },
+          return(value) { events.push(['return', value]); return result; } };
+        function* work() { yield* iterable; }
+        const i = work(); const first = i.next();
+        const second = i.${action}(7);
+        globalThis.__result = [first === result, second === result, events];
+      `)
+    })
+  }
+
+  it('checks a throwing done getter before reading the delegated value', () => {
+    expectEquivalent(`
+      const events = [];
+      const iterable = { [Symbol.iterator]() { return this; }, next() { return {
+        get done() { events.push('done'); throw new RangeError('done'); },
+        get value() { events.push('value'); return 1; }
+      }; } };
+      function* work() { try { yield* iterable; } catch (error) { return error.name; } }
+      globalThis.__result = [work().next(), events];
+    `)
+  })
+
+  it('reads a completed result value after its done getter', () => {
+    expectEquivalent(`
+      const events = [];
+      const iterable = { [Symbol.iterator]() { return this; }, next() { return {
+        get done() { events.push('done'); return true; },
+        get value() { events.push('value'); return 3; }
+      }; } };
+      function* work() { return yield* iterable; }
+      globalThis.__result = [work().next(), events];
+    `)
+  })
+})
