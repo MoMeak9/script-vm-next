@@ -1,5 +1,9 @@
-import traverse from '@babel/traverse'
+import traverseModule from '@babel/traverse'
 import * as t from '@babel/types'
+
+const traverse: typeof traverseModule = typeof traverseModule === 'function'
+  ? traverseModule
+  : (traverseModule as unknown as { default: typeof traverseModule }).default
 
 /** NamedEvaluation attaches observable names to anonymous functions/classes
  * without creating a lexical self binding. Dynamic object keys are handled by
@@ -21,6 +25,9 @@ export function inferFunctionNames(file: t.File): void {
         if (t.isIdentifier(parent.key)) name = parent.key.name
         else if (t.isStringLiteral(parent.key) || t.isNumericLiteral(parent.key)) name = String(parent.key.value)
       }
+      // The legacy __proto__ initializer sets the prototype; it does not
+      // perform NamedEvaluation like an ordinary property definition.
+      if (name === '__proto__' && t.isObjectProperty(parent) && !parent.computed) return
       if (name !== undefined) node.extra = { ...node.extra, vmFunctionName: name }
     },
   })
