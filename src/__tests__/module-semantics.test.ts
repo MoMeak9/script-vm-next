@@ -211,15 +211,26 @@ describe('ESM live bindings compared with native modules', () => {
     }, mod => mod.check())).toEqual([['TypeError', 'TypeError', 'TypeError'], 1, ['count', 'increment'], true])
   })
 
-  it.each([
-    'export let x = 0; export function update() { let o = null; [x, o.y] = [1, 2]; }',
-    'export let x = 0; export function update() { for ([x] of [[1]]) {} }',
-  ])('rejects exported destructuring writes before partial updates can be lost: %s', source => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'scriptvm-module-destructuring-'))
-    directories.push(dir)
-    const file = path.join(dir, 'entry.mjs')
-    fs.writeFileSync(file, source)
-    expect(() => transform(file, { format: 'esm' })).toThrow(/Destructuring.*exported binding/)
+  it('publishes destructuring writes before a later target throws', async () => {
+    expect(await compareModules({ 'entry.mjs': `
+      export let x = 0;
+      export function update() { let o = null; [x, o.y] = [1, 2]; }
+    ` }, mod => {
+      let error;
+      try { mod.update(); } catch (caught) { error = caught.name; }
+      return [mod.x, error];
+    })).toEqual([1, 'TypeError'])
+  })
+
+  it('publishes destructuring loop writes before the body', async () => {
+    expect(await compareModules({ 'entry.mjs': `
+      export let x = 0;
+      export function update(observe) {
+        const seen = [];
+        for ([x] of [[1], [2]]) seen.push(observe());
+        return seen;
+      }
+    ` }, mod => [mod.update(() => mod.x), mod.x])).toEqual([[1, 2], 2])
   })
 
   it('rejects imports of missing or ambiguous exports', () => {
@@ -248,11 +259,10 @@ describe('ESM live bindings compared with native modules', () => {
     expect(run('.vm.mjs')).toEqual([3, 2])
   })
 
-  it('rejects circular dependencies explicitly', () => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'scriptvm-module-cycle-'))
-    directories.push(dir)
-    fs.writeFileSync(path.join(dir, 'entry.mjs'), "import './other.mjs'; export let value = 1;")
-    fs.writeFileSync(path.join(dir, 'other.mjs'), "import './entry.mjs';")
-    expect(() => transform(path.join(dir, 'entry.mjs'), { format: 'esm' })).toThrow('Circular dependency')
+  it('links cyclic side-effect imports before evaluating the entry', async () => {
+    expect(await compareModules({
+      'entry.mjs': "import './other.mjs'; export let value = 1;",
+      'other.mjs': "import './entry.mjs';",
+    }, mod => mod.value)).toEqual(1)
   })
 })

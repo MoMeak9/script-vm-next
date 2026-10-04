@@ -81,7 +81,16 @@ try {
     '--registry=https://registry.npmjs.org',
   ])
 
-  const source = 'globalThis.__packageResult = 6 * 7;'
+  const source = [
+    'globalThis.__packageResult = 6 * 7;',
+    'const [first, ...rest] = new Set([1, 2, 3]);',
+    'var outer = 1; function parameter(read = () => outer) { var outer = 9; return read(); }',
+    'class Base { static value() { return 7; } } class Derived extends Base {}',
+    'function tag(strings) { return strings; } function template() { return tag`shared`; }',
+    'const strings = template();',
+    'globalThis.__compatibilityChecks = [first, rest, parameter(), Derived.value(),',
+    '  strings === template(), Object.isFrozen(strings), Object.isFrozen(strings.raw)];',
+  ].join('\n')
   await writeFile(path.join(consumer, 'input.js'), source)
   const smokeAssertions = `
     const source = ${JSON.stringify(source)};
@@ -95,6 +104,8 @@ try {
       const context = {};
       runInNewContext(output.code, context, { timeout: 3000 });
       assert.equal(context.__packageResult, 42, name + ' compiled execution');
+      assert.deepEqual(JSON.parse(JSON.stringify(context.__compatibilityChecks)),
+        [1, [2, 3], 1, 7, true, true, true], name + ' automatic ES2015 compatibility');
       assert.throws(() => api.compileSource('const = ;', { filename: 'broken.js' }),
         (error) => error instanceof api.CompileError && error.code === 'SYNTAX_ERROR');
     }
@@ -107,6 +118,8 @@ try {
       const context = {};
       runInNewContext(code, context, { timeout: 3000 });
       assert.equal(context.__packageResult, 42, 'file API execution');
+      assert.deepEqual(JSON.parse(JSON.stringify(context.__compatibilityChecks)),
+        [1, [2, 3], 1, 7, true, true, true], 'file API automatic ES2015 compatibility');
     }
   `
   await writeFile(path.join(consumer, 'consumer.cjs'), `

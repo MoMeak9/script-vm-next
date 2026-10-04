@@ -24,6 +24,11 @@ export interface FunctionMeta {
   slotKinds: SlotKind[]
   async: boolean
   generator: boolean
+  strict: boolean
+  method: boolean
+  module: boolean
+  length: number
+  parameterEnd?: number
 }
 
 export interface ProgramArtifact {

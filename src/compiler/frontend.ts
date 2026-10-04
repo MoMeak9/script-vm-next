@@ -1,6 +1,7 @@
 import * as parser from '@babel/parser'
 import traverseModule from '@babel/traverse'
 import * as t from '@babel/types'
+import { normalizeFunctionParameters } from './parameter-normalization'
 
 // Babel publishes CommonJS. Native ESM and browser bundlers may expose its
 // callable default one level below the module's default export.
@@ -26,22 +27,66 @@ export function parseSource(source: string, sourceType: 'module' | 'script' | 'u
   })
 }
 
-function transformSuperCalls(bodyStatements: t.Statement[]) {
+function classLocal(name: string): t.Identifier {
+  return t.identifier(`@script-vm/class/${name}`)
+}
+
+function strictClassBody(statements: t.Statement[]): t.BlockStatement {
+  return t.blockStatement(statements, [t.directive(t.directiveLiteral('use strict'))])
+}
+
+function classHelper(source: string, names: string[]): t.Statement[] {
+  const ast = parseSource(source, 'script')
+  traverse(ast, {
+    Identifier(path) {
+      if (names.includes(path.node.name)) path.node.name = classLocal(path.node.name).name
+      else if (['Object', 'Reflect', 'ReferenceError', 'TypeError', 'PropertyKey'].includes(path.node.name)) {
+        path.node.name = classIntrinsic(path.node.name as 'Object').name
+      }
+    },
+  })
+  return ast.program.body as t.Statement[]
+}
+
+function transformSuperCalls(
+  bodyStatements: t.Statement[],
+  classId: t.Identifier,
+  isStatic = false,
+  derivedConstructor = false
+) {
   const ast = t.file(
     t.program([
       t.functionDeclaration(t.identifier('_tmp'), [], t.blockStatement(bodyStatements)),
     ])
   )
 
+  const root = ast.program.body[0]
+  const receiver = () => derivedConstructor
+    ? t.callExpression(classLocal('getThis'), [])
+    : t.thisExpression()
+  const home = () => isStatic ? t.cloneNode(classId) : t.memberExpression(t.cloneNode(classId), t.identifier('prototype'))
+  const superRef = (member: t.MemberExpression) => t.memberExpression(
+    t.callExpression(classLocal('superRef'), [
+      home(), member.computed ? member.property as t.Expression
+        : t.stringLiteral((member.property as t.Identifier).name), receiver(),
+    ]),
+    t.identifier('value')
+  )
+
   traverse(ast, {
-    CallExpression(path) {
+    Function(path) {
+      if (path.node !== root && !path.isArrowFunctionExpression()) path.skip()
+    },
+    Class(path) { path.skip() },
+    CallExpression: { exit(path) {
       const callee = path.node.callee
       if (t.isSuper(callee)) {
         path.replaceWith(
-          t.callExpression(
-            t.memberExpression(t.identifier('_super'), t.identifier('call')),
-            [t.thisExpression(), ...path.node.arguments]
-          )
+          t.callExpression(classLocal('initThis'), [t.callExpression(
+            t.memberExpression(classIntrinsic('Reflect'), t.identifier('construct')),
+            [classLocal('super'), buildConcatArgs(path.node.arguments as (t.Expression | t.SpreadElement)[]),
+              t.metaProperty(t.identifier('new'), t.identifier('target'))]
+          )])
         )
         path.skip()
         return
@@ -50,31 +95,33 @@ function transformSuperCalls(bodyStatements: t.Statement[]) {
       if (t.isMemberExpression(callee) && t.isSuper(callee.object)) {
         path.replaceWith(
           t.callExpression(
-            t.memberExpression(
-              t.memberExpression(
-                t.memberExpression(t.identifier('_super'), t.identifier('prototype')),
-                callee.property,
-                callee.computed
-              ),
-              t.identifier('call')
-            ),
-            [t.thisExpression(), ...path.node.arguments]
+            t.memberExpression(classIntrinsic('Reflect'), t.identifier('apply')),
+            [superRef(callee), receiver(), buildConcatArgs(path.node.arguments as (t.Expression | t.SpreadElement)[])]
           )
         )
         path.skip()
       }
-    },
-    MemberExpression(path) {
-      if (t.isSuper(path.node.object) && !path.parentPath.isCallExpression()) {
-        path.replaceWith(
-          t.memberExpression(
-            t.memberExpression(t.identifier('_super'), t.identifier('prototype')),
-            path.node.property,
-            path.node.computed
-          )
-        )
+    } },
+    MemberExpression: { exit(path) {
+      if (t.isSuper(path.node.object) && !path.parentPath.isCallExpression({ callee: path.node })) {
+        path.replaceWith(superRef(path.node))
+        path.skip()
       }
+    } },
+    ThisExpression(path) {
+      if (!derivedConstructor) return
+      path.replaceWith(receiver())
+      path.skip()
     },
+    ReturnStatement: { exit(path) {
+      if (!derivedConstructor || path.getFunctionParent()?.node !== root) return
+      // Validate the final completion only after finally clauses have run.
+      path.replaceWith(t.blockStatement([
+        t.expressionStatement(t.assignmentExpression('=', classLocal('returnValue'), path.node.argument ?? t.unaryExpression('void', t.numericLiteral(0)))),
+        t.breakStatement(classLocal('return')),
+      ]))
+      path.skip()
+    } },
   })
 
   const transformed = [...(ast.program.body[0] as t.FunctionDeclaration).body.body]
@@ -96,7 +143,7 @@ interface PrivateDescriptor {
 // Reserved names are injected after parsing and cannot be declared by source
 // code. LOAD_GLOBAL resolves them to VM-private host intrinsics, so class
 // helpers do not accidentally capture a user's Object/WeakMap/etc. binding.
-function classIntrinsic(name: 'Object' | 'WeakMap' | 'WeakSet' | 'TypeError'): t.Identifier {
+function classIntrinsic(name: 'Object' | 'WeakMap' | 'WeakSet' | 'TypeError' | 'ReferenceError' | 'Reflect' | 'PropertyKey' | 'Proxy'): t.Identifier {
   return t.identifier(`@script-vm/intrinsic/${name}`)
 }
 
@@ -106,17 +153,17 @@ function createPrivateReferenceHelper(kind: 'Field' | 'Accessor'): t.FunctionDec
   const getArgs = field ? ['map', 'receiver'] : ['receiver', 'brand', 'getter']
   const setArgs = field ? ['map', 'receiver', 'value'] : ['receiver', 'brand', 'setter', 'value']
   return t.functionDeclaration(
-    t.identifier(`__private${kind}Ref`),
+    classLocal(`private${kind}Ref`),
     args.map(name => t.identifier(name)),
     t.blockStatement([
       t.returnStatement(t.callExpression(
         t.memberExpression(classIntrinsic('Object'), t.identifier('defineProperty')),
         [t.objectExpression([]), t.stringLiteral('value'), t.objectExpression([
           t.objectProperty(t.identifier('get'), t.functionExpression(null, [], t.blockStatement([
-            t.returnStatement(t.callExpression(t.identifier(`__private${kind}Get`), getArgs.map(name => t.identifier(name)))),
+            t.returnStatement(t.callExpression(classLocal(`private${kind}Get`), getArgs.map(name => t.identifier(name)))),
           ]))),
           t.objectProperty(t.identifier('set'), t.functionExpression(null, [t.identifier('value')], t.blockStatement([
-            t.expressionStatement(t.callExpression(t.identifier(`__private${kind}Set`), setArgs.map(name => t.identifier(name)))),
+            t.expressionStatement(t.callExpression(classLocal(`private${kind}Set`), setArgs.map(name => t.identifier(name)))),
           ]))),
         ])]
       )),
@@ -129,7 +176,7 @@ function createPrivateHelpers(): t.Statement[] {
     createPrivateReferenceHelper('Field'),
     createPrivateReferenceHelper('Accessor'),
     t.functionDeclaration(
-      t.identifier('__privateFieldGet'),
+      classLocal('privateFieldGet'),
       [t.identifier('map'), t.identifier('receiver')],
       t.blockStatement([
         t.ifStatement(
@@ -149,7 +196,7 @@ function createPrivateHelpers(): t.Statement[] {
       ])
     ),
     t.functionDeclaration(
-      t.identifier('__privateFieldSet'),
+      classLocal('privateFieldSet'),
       [t.identifier('map'), t.identifier('receiver'), t.identifier('value')],
       t.blockStatement([
         t.ifStatement(
@@ -173,7 +220,7 @@ function createPrivateHelpers(): t.Statement[] {
       ])
     ),
     t.functionDeclaration(
-      t.identifier('__privateFieldInit'),
+      classLocal('privateFieldInit'),
       [t.identifier('map'), t.identifier('receiver'), t.identifier('value')],
       t.blockStatement([
         t.ifStatement(
@@ -197,7 +244,7 @@ function createPrivateHelpers(): t.Statement[] {
       ])
     ),
     t.functionDeclaration(
-      t.identifier('__privateMethod'),
+      classLocal('privateMethod'),
       [t.identifier('receiver'), t.identifier('brand'), t.identifier('fn')],
       t.blockStatement([
         t.ifStatement(
@@ -215,7 +262,7 @@ function createPrivateHelpers(): t.Statement[] {
       ])
     ),
     t.functionDeclaration(
-      t.identifier('__privateAccessorGet'),
+      classLocal('privateAccessorGet'),
       [t.identifier('receiver'), t.identifier('brand'), t.identifier('getter')],
       t.blockStatement([
         t.ifStatement(
@@ -245,7 +292,7 @@ function createPrivateHelpers(): t.Statement[] {
       ])
     ),
     t.functionDeclaration(
-      t.identifier('__privateAccessorSet'),
+      classLocal('privateAccessorSet'),
       [t.identifier('receiver'), t.identifier('brand'), t.identifier('setter'), t.identifier('value')],
       t.blockStatement([
         t.ifStatement(
@@ -283,13 +330,13 @@ function createPrivateHelpers(): t.Statement[] {
 // until GetValue/PutValue, including after the RHS for a simple assignment.
 function privateWriteReference(descriptor: PrivateDescriptor, receiver: t.Expression): t.MemberExpression {
   const reference = descriptor.kind === 'accessor'
-    ? t.callExpression(t.identifier('__privateAccessorRef'), [
+    ? t.callExpression(classLocal('privateAccessorRef'), [
         receiver,
         descriptor.brandId!,
         descriptor.getterId ?? t.unaryExpression('void', t.numericLiteral(0)),
         descriptor.setterId ?? t.unaryExpression('void', t.numericLiteral(0)),
       ])
-    : t.callExpression(t.identifier('__privateFieldRef'), [descriptor.storageId, receiver])
+    : t.callExpression(classLocal('privateFieldRef'), [descriptor.storageId, receiver])
   return t.memberExpression(reference, t.identifier('value'))
 }
 
@@ -321,7 +368,7 @@ function transformPrivateAst(ast: t.File, descriptors: Map<string, PrivateDescri
             t.memberExpression(
               descriptor.static
                 ? descriptor.storageId
-                : t.callExpression(t.identifier('__privateMethod'), [receiver, descriptor.brandId!, descriptor.implId!]),
+                : t.callExpression(classLocal('privateMethod'), [receiver, descriptor.brandId!, descriptor.implId!]),
               t.identifier('call')
             ),
             [t.cloneNode(receiver, true), ...path.node.arguments]
@@ -338,20 +385,20 @@ function transformPrivateAst(ast: t.File, descriptors: Map<string, PrivateDescri
         if (!descriptor) return
         const receiver = path.node.object as t.Expression
         if (descriptor.kind === 'accessor') {
-          path.replaceWith(t.callExpression(t.identifier('__privateAccessorGet'), [
+          path.replaceWith(t.callExpression(classLocal('privateAccessorGet'), [
             receiver,
             descriptor.brandId!,
             descriptor.getterId ?? t.unaryExpression('void', t.numericLiteral(0)),
           ]))
         } else if (descriptor.kind === 'field') {
-          path.replaceWith(t.callExpression(t.identifier('__privateFieldGet'), [descriptor.storageId, receiver]))
+          path.replaceWith(t.callExpression(classLocal('privateFieldGet'), [descriptor.storageId, receiver]))
         } else {
           path.replaceWith(
             descriptor.static
               ? descriptor.storageId
               : t.callExpression(
                   t.memberExpression(
-                    t.callExpression(t.identifier('__privateMethod'), [receiver, descriptor.brandId!, descriptor.implId!]),
+                    t.callExpression(classLocal('privateMethod'), [receiver, descriptor.brandId!, descriptor.implId!]),
                     t.identifier('bind')
                   ),
                   [t.cloneNode(receiver, true)]
@@ -381,13 +428,36 @@ function transformPrivateBody(bodyStatements: t.Statement[], descriptors: Map<st
 }
 
 function buildClassIife(node: t.ClassDeclaration | t.ClassExpression, classId: t.Identifier): t.Expression {
+  const sourceClassId = classId
+  classId = classLocal('constructor')
   const superClass = node.superClass
   const body = node.body.body
   const statements: t.Statement[] = []
-  const superParam = superClass ? t.identifier('_super') : null
+  const superParam = superClass ? classLocal('super') : null
   const methodInitializers: t.Statement[] = []
   const privateDescriptors = new Map<string, PrivateDescriptor>()
   const helperStatements = createPrivateHelpers()
+  helperStatements.push(...classHelper(`
+    function superRef(home, key, receiver) {
+      key = PropertyKey(key);
+      var base = Object.getPrototypeOf(home);
+      return Object.defineProperty({}, 'value', {
+        get: function () { return Reflect.get(base, key, receiver); },
+        set: function (value) {
+          if (!Reflect.set(base, key, value, receiver)) throw new TypeError('Cannot assign to inherited property');
+        }
+      });
+    }
+    function defineMethod(target, key, kind, fn) {
+      key = PropertyKey(key);
+      var name = typeof key === 'symbol' ? (key.description === void 0 ? '' : '[' + key.description + ']') : key;
+      Object.defineProperty(fn, 'name', { value: (kind === 'value' ? '' : kind + ' ') + name, configurable: true });
+      var descriptor = { configurable: true, enumerable: false };
+      descriptor[kind] = fn;
+      if (kind === 'value') descriptor.writable = true;
+      Object.defineProperty(target, key, descriptor);
+    }
+  `, ['superRef', 'defineMethod']))
 
   if (body.some((member) => t.isClassAccessorProperty(member) || t.isClassPrivateProperty(member) && member.static && !member.value && false)) {
     // keep placeholder to avoid unsupported syntax slipping through silently
@@ -400,7 +470,7 @@ function buildClassIife(node: t.ClassDeclaration | t.ClassExpression, classId: t
         // Private accessor: get #x() / set #x()
         let descriptor = privateDescriptors.get(name)
         if (!descriptor) {
-          const brandId = t.identifier(`_${classId.name}_${name}_brand`)
+          const brandId = classLocal(`private-${classId.name}-${name}-brand`)
           descriptor = {
             name,
             static: member.static,
@@ -419,7 +489,7 @@ function buildClassIife(node: t.ClassDeclaration | t.ClassExpression, classId: t
           else methodInitializers.push(initializeBrand)
         }
 
-        const accessorImplId = t.identifier(`_${classId.name}_${member.kind}_${name}`)
+        const accessorImplId = classLocal(`private-${classId.name}-${member.kind}-${name}`)
         if (member.kind === 'get') {
           descriptor.getterId = accessorImplId
         } else {
@@ -428,7 +498,7 @@ function buildClassIife(node: t.ClassDeclaration | t.ClassExpression, classId: t
 
         continue
       }
-      const implId = t.identifier(`_${classId.name}_${name}_impl`)
+      const implId = classLocal(`private-${classId.name}-${name}-impl`)
       if (member.static) {
         privateDescriptors.set(name, {
           name,
@@ -437,7 +507,7 @@ function buildClassIife(node: t.ClassDeclaration | t.ClassExpression, classId: t
           storageId: implId,
         })
       } else {
-        const brandId = t.identifier(`_${classId.name}_${name}_brand`)
+        const brandId = classLocal(`private-${classId.name}-${name}-brand`)
         privateDescriptors.set(name, {
           name,
           static: false,
@@ -461,7 +531,7 @@ function buildClassIife(node: t.ClassDeclaration | t.ClassExpression, classId: t
 
     if (t.isClassPrivateProperty(member)) {
       const name = member.key.id.name
-      const storageId = t.identifier(`_${classId.name}_${name}`)
+      const storageId = classLocal(`private-${classId.name}-${name}`)
       privateDescriptors.set(name, {
         name,
         static: member.static,
@@ -484,11 +554,12 @@ function buildClassIife(node: t.ClassDeclaration | t.ClassExpression, classId: t
       : member.kind === 'set' ? descriptor.setterId!
       : descriptor.implId ?? descriptor.storageId
     const methodBody = t.cloneNode(member.body, true)
+    transformSuperCalls(methodBody.body, classId, member.static)
     transformPrivateBody(methodBody.body, privateDescriptors, classId)
-    helperStatements.push(t.variableDeclaration('var', [t.variableDeclarator(
-      implId,
-      t.functionExpression(null, member.params as t.Identifier[], methodBody, member.generator, member.async)
-    )]))
+    methodBody.directives = [t.directive(t.directiveLiteral('use strict'))]
+    const impl = t.functionExpression(null, member.params as t.Identifier[], methodBody, member.generator, member.async)
+    impl.extra = { ...member.extra, scriptVmMethod: true }
+    helperStatements.push(t.variableDeclaration('var', [t.variableDeclarator(implId, impl)]))
   }
 
   statements.push(...helperStatements)
@@ -506,17 +577,14 @@ function buildClassIife(node: t.ClassDeclaration | t.ClassExpression, classId: t
       return param
     })
     constructorBody = [...constructorMethod.body.body]
-    if (superClass) {
-      transformSuperCalls(constructorBody)
-    }
     transformPrivateBody(constructorBody, privateDescriptors, classId)
   } else if (superClass) {
     constructorBody = [
       t.expressionStatement(
-        t.callExpression(
-          t.memberExpression(t.identifier('_super'), t.identifier('apply')),
-          [t.thisExpression(), t.identifier('arguments')]
-        )
+        t.callExpression(classLocal('initThis'), [t.callExpression(
+          t.memberExpression(classIntrinsic('Reflect'), t.identifier('construct')),
+          [classLocal('super'), t.identifier('arguments'), t.metaProperty(t.identifier('new'), t.identifier('target'))]
+        )])
       ),
     ]
   }
@@ -533,12 +601,12 @@ function buildClassIife(node: t.ClassDeclaration | t.ClassExpression, classId: t
 
       if (member.static) {
         orderedStaticAssignments.push(
-          t.expressionStatement(t.callExpression(t.identifier('__privateFieldInit'), [descriptor.storageId, classId, initExpr]))
+          t.expressionStatement(t.callExpression(classLocal('privateFieldInit'), [descriptor.storageId, classId, initExpr]))
         )
       } else {
         orderedInstanceInitializers.push(
           t.expressionStatement(
-            t.callExpression(t.identifier('__privateFieldInit'), [descriptor.storageId, t.thisExpression(), initExpr])
+            t.callExpression(classLocal('privateFieldInit'), [descriptor.storageId, t.thisExpression(), initExpr])
           )
         )
       }
@@ -588,35 +656,70 @@ function buildClassIife(node: t.ClassDeclaration | t.ClassExpression, classId: t
     }
   }
 
-  const ctorInitializers = orderedInstanceInitializers
-  if (ctorInitializers.length > 0) {
-    if (superClass) {
-      const insertIndex = constructorBody.findIndex(
-        (statement) =>
-          t.isExpressionStatement(statement) &&
-          t.isCallExpression(statement.expression) &&
-          t.isMemberExpression(statement.expression.callee) &&
-          t.isIdentifier(statement.expression.callee.object, { name: '_super' })
-      )
-      if (insertIndex >= 0) {
-        constructorBody.splice(insertIndex + 1, 0, ...ctorInitializers)
-      } else {
-        constructorBody.unshift(...ctorInitializers)
+  if (superClass) {
+    transformSuperCalls(constructorBody, classId, false, true)
+    transformSuperCalls(orderedInstanceInitializers, classId, false, true)
+    const helpers = classHelper(`
+      var thisValue, returnValue;
+      function getThis() {
+        if (thisValue === void 0) throw new ReferenceError('Must call super constructor before accessing this');
+        return thisValue;
       }
-    } else {
-      constructorBody.unshift(...ctorInitializers)
-    }
+      function initThis(value) {
+        if (thisValue !== void 0) throw new ReferenceError('Super constructor may only be called once');
+        thisValue = value;
+        return thisValue;
+      }
+      function finish(value) {
+        if (value !== void 0) {
+          if (value !== null && (typeof value === 'object' || typeof value === 'function')) return value;
+          throw new TypeError('Derived constructors may only return object or undefined');
+        }
+        return getThis();
+      }
+    `, ['thisValue', 'returnValue', 'getThis', 'initThis', 'finish'])
+    const initializer = helpers.find(statement => t.isFunctionDeclaration(statement) && statement.id?.name === classLocal('initThis').name) as t.FunctionDeclaration
+    initializer.body.body.splice(2, 0, ...orderedInstanceInitializers)
+    const parameterEnd = constructorBody.findIndex(statement => statement.extra?.vmParameterPreludeEnd)
+    const parameterPrelude = parameterEnd < 0 ? [] : constructorBody.splice(0, parameterEnd + 1)
+    const returnBlock = t.blockStatement([
+      ...constructorBody,
+      // A finally break/continue can cancel a pending return. Falling through
+      // the body clears its saved value; an actual return exits this label first.
+      t.expressionStatement(t.assignmentExpression('=', classLocal('returnValue'), t.unaryExpression('void', t.numericLiteral(0)))),
+    ])
+    returnBlock.extra = { vmTransparentScope: true }
+    constructorBody = [
+      ...helpers,
+      ...parameterPrelude,
+      t.labeledStatement(classLocal('return'), returnBlock),
+      t.returnStatement(t.callExpression(classLocal('finish'), [classLocal('returnValue')])),
+    ]
+  } else {
+    transformSuperCalls(constructorBody, classId)
+    constructorBody.unshift(...orderedInstanceInitializers)
   }
-
-  statements.push(
-    t.functionDeclaration(
-      t.identifier(classId.name),
-      constructorParams,
-      t.blockStatement(constructorBody)
-    )
-  )
+  constructorBody.unshift(t.ifStatement(
+    t.unaryExpression('!', t.metaProperty(t.identifier('new'), t.identifier('target'))),
+    t.throwStatement(t.newExpression(classIntrinsic('TypeError'), [t.stringLiteral('Class constructor cannot be invoked without new')]))
+  ))
+  const constructor = t.functionDeclaration(t.identifier(classId.name), constructorParams, strictClassBody(constructorBody))
+  constructor.extra = {
+    ...node.extra, ...constructorMethod?.extra,
+    vmFunctionName: node.extra?.vmFunctionName ?? node.id?.name ?? '',
+  }
+  statements.push(constructor)
 
   if (superClass) {
+    // A proxy preserves IsConstructor while its construct trap avoids executing
+    // the superclass or reading its prototype during this validation step.
+    statements.push(t.ifStatement(t.binaryExpression('!==', classLocal('super'), t.nullLiteral()), t.expressionStatement(
+      t.callExpression(t.memberExpression(classIntrinsic('Reflect'), t.identifier('construct')), [
+        t.newExpression(classIntrinsic('Proxy'), [classLocal('super'), t.objectExpression([
+          t.objectProperty(t.identifier('construct'), t.functionExpression(null, [], t.blockStatement([t.returnStatement(t.objectExpression([]))]))),
+        ])]), t.arrayExpression([]),
+      ])
+    )))
     statements.push(
       t.expressionStatement(
         t.assignmentExpression(
@@ -624,24 +727,34 @@ function buildClassIife(node: t.ClassDeclaration | t.ClassExpression, classId: t
           t.memberExpression(classId, t.identifier('prototype')),
           t.callExpression(
             t.memberExpression(classIntrinsic('Object'), t.identifier('create')),
-            [t.memberExpression(t.identifier('_super'), t.identifier('prototype'))]
+            [t.conditionalExpression(
+              t.binaryExpression('===', classLocal('super'), t.nullLiteral()), t.nullLiteral(),
+              t.memberExpression(classLocal('super'), t.identifier('prototype'))
+            )]
           )
         )
       )
     )
     statements.push(
       t.expressionStatement(
-        t.assignmentExpression(
-          '=',
-          t.memberExpression(
-            t.memberExpression(classId, t.identifier('prototype')),
-            t.identifier('constructor')
-          ),
-          classId
-        )
+        t.callExpression(t.memberExpression(classIntrinsic('Object'), t.identifier('defineProperty')), [
+          t.memberExpression(classId, t.identifier('prototype')), t.stringLiteral('constructor'),
+          t.objectExpression([
+            t.objectProperty(t.identifier('value'), classId),
+            t.objectProperty(t.identifier('writable'), t.booleanLiteral(true)),
+            t.objectProperty(t.identifier('configurable'), t.booleanLiteral(true)),
+          ]),
+        ])
       )
     )
+    statements.push(t.ifStatement(t.binaryExpression('!==', classLocal('super'), t.nullLiteral()), t.expressionStatement(
+      t.callExpression(t.memberExpression(classIntrinsic('Object'), t.identifier('setPrototypeOf')), [classId, classLocal('super')])
+    )))
   }
+  statements.push(t.expressionStatement(t.callExpression(
+    t.memberExpression(classIntrinsic('Object'), t.identifier('defineProperty')), [classId, t.stringLiteral('prototype'),
+      t.objectExpression([t.objectProperty(t.identifier('writable'), t.booleanLiteral(false))])]
+  )))
 
   for (const member of body) {
     if (t.isClassProperty(member) || t.isClassPrivateProperty(member) || t.isClassPrivateMethod(member)) continue
@@ -651,10 +764,9 @@ function buildClassIife(node: t.ClassDeclaration | t.ClassExpression, classId: t
     }
 
     const methodBody = t.cloneNode(member.body, true)
-    if (superClass) {
-      transformSuperCalls(methodBody.body)
-    }
+    transformSuperCalls(methodBody.body, classId, member.static)
     transformPrivateBody(methodBody.body, privateDescriptors, classId)
+    methodBody.directives = [t.directive(t.directiveLiteral('use strict'))]
     const fn = t.functionExpression(
       null,
       member.params as t.Identifier[],
@@ -662,39 +774,22 @@ function buildClassIife(node: t.ClassDeclaration | t.ClassExpression, classId: t
       member.generator,
       member.async
     )
+    fn.extra = { ...member.extra, scriptVmMethod: true }
+    const key = member.computed ? member.key as t.Expression
+      : t.isIdentifier(member.key) ? t.stringLiteral(member.key.name) : member.key as t.Expression
 
-    if (member.kind === 'get' || member.kind === 'set') {
-      statements.push(
-        t.expressionStatement(
-          t.callExpression(
-            t.memberExpression(classIntrinsic('Object'), t.identifier('defineProperty')),
-            [
-              member.static ? classId : t.memberExpression(classId, t.identifier('prototype')),
-              member.computed ? (member.key as t.Expression) : t.stringLiteral((member.key as t.Identifier).name),
-              t.objectExpression([t.objectProperty(t.identifier(member.kind), fn)]),
-            ]
-          )
-        )
-      )
-      continue
-    }
-
-    statements.push(
-      t.expressionStatement(
-        t.assignmentExpression(
-          '=',
-          t.memberExpression(
-            member.static ? classId : t.memberExpression(classId, t.identifier('prototype')),
-            member.key as t.Expression,
-            member.computed
-          ),
-          fn
-        )
-      )
-    )
+    statements.push(t.expressionStatement(t.callExpression(classLocal('defineMethod'), [
+      member.static ? classId : t.memberExpression(classId, t.identifier('prototype')), key,
+      t.stringLiteral(member.kind === 'get' || member.kind === 'set' ? member.kind : 'value'), fn,
+    ])))
   }
 
+  // The class name is an immutable inner binding. Keep it uninitialized while
+  // computed method keys run, and never use it for generated helper references.
+  if (node.id) statements.push(t.variableDeclaration('const', [t.variableDeclarator(sourceClassId, classId)]))
+
   if (orderedStaticAssignments.length > 0) {
+    transformSuperCalls(orderedStaticAssignments, classId, true)
     // Static field initializers evaluate with the class as their `this` value.
     statements.push(t.expressionStatement(t.callExpression(
       t.memberExpression(
@@ -708,9 +803,20 @@ function buildClassIife(node: t.ClassDeclaration | t.ClassExpression, classId: t
   statements.push(t.returnStatement(classId))
 
   return t.callExpression(
-    t.functionExpression(null, superParam ? [superParam] : [], t.blockStatement(statements)),
+    t.functionExpression(null, superParam ? [superParam] : [], strictClassBody(statements)),
     superClass ? [superClass as t.Expression] : []
   )
+}
+
+function iteratorIntrinsic(name: string, args: t.Expression[]): t.CallExpression {
+  return t.callExpression(t.identifier(`@script-vm/intrinsic/${name}`), args)
+}
+
+function transparentBlock(statements: t.Statement[]): t.BlockStatement {
+  const block = t.blockStatement(statements)
+  // Iterator cleanup must not introduce a new lexical scope for declarations.
+  block.extra = { ...block.extra, vmTransparentScope: true }
+  return block
 }
 
 function desugarPattern(
@@ -720,124 +826,7 @@ function desugarPattern(
   statements: t.Statement[],
   nextId: () => string
 ) {
-  if (t.isObjectPattern(pattern)) {
-    const restExcludes: string[] = []
-    for (const prop of pattern.properties) {
-      if (t.isRestElement(prop)) {
-        const restTarget = prop.argument as t.Identifier
-        const restTmp = t.identifier(nextId())
-        const keysTmp = t.identifier(nextId())
-        const iTmp = t.identifier(nextId())
-        statements.push(t.variableDeclaration('var', [t.variableDeclarator(restTmp, t.objectExpression([]))]))
-        statements.push(t.variableDeclaration('var', [
-          t.variableDeclarator(keysTmp, t.callExpression(
-            t.memberExpression(t.identifier('Object'), t.identifier('keys')),
-            [source]
-          ))
-        ]))
-        const excludeChecks = restExcludes.map(k =>
-          t.binaryExpression('!==', t.memberExpression(keysTmp, iTmp, true), t.stringLiteral(k))
-        )
-        const condition: t.Expression = excludeChecks.length > 0
-          ? (excludeChecks as t.Expression[]).reduce((a, b) => t.logicalExpression('&&', a, b))
-          : t.booleanLiteral(true)
-        statements.push(t.forStatement(
-          t.variableDeclaration('var', [t.variableDeclarator(iTmp, t.numericLiteral(0))]),
-          t.binaryExpression('<', iTmp, t.memberExpression(keysTmp, t.identifier('length'))),
-          t.updateExpression('++', iTmp),
-          t.blockStatement([
-            t.ifStatement(condition, t.blockStatement([
-              t.expressionStatement(t.assignmentExpression('=',
-                t.memberExpression(restTmp, t.memberExpression(keysTmp, iTmp, true), true),
-                t.memberExpression(source, t.memberExpression(keysTmp, iTmp, true), true)
-              ))
-            ]))
-          ])
-        ))
-        statements.push(t.variableDeclaration(kind, [t.variableDeclarator(restTarget, restTmp)]))
-        continue
-      }
-
-      const objProp = prop as t.ObjectProperty
-      const keyName = !objProp.computed && t.isIdentifier(objProp.key) ? objProp.key.name : null
-      if (keyName) restExcludes.push(keyName)
-
-      const accessExpr = objProp.computed
-        ? t.memberExpression(source, objProp.key as t.Expression, true)
-        : t.isIdentifier(objProp.key)
-          ? t.memberExpression(source, t.stringLiteral(objProp.key.name), true)
-          : t.memberExpression(source, objProp.key as t.Expression, true)
-
-      const target = objProp.value
-
-      if (t.isAssignmentPattern(target)) {
-        const valTmp = t.identifier(nextId())
-        statements.push(t.variableDeclaration('var', [t.variableDeclarator(valTmp, accessExpr)]))
-        const withDefault = t.conditionalExpression(
-          t.binaryExpression('!==', valTmp, t.identifier('undefined')),
-          valTmp,
-          target.right
-        )
-        if (t.isIdentifier(target.left)) {
-          statements.push(t.variableDeclaration(kind, [t.variableDeclarator(target.left, withDefault)]))
-        } else if (t.isObjectPattern(target.left) || t.isArrayPattern(target.left)) {
-          const nestedTmp = t.identifier(nextId())
-          statements.push(t.variableDeclaration('var', [t.variableDeclarator(nestedTmp, withDefault)]))
-          desugarPattern(target.left, nestedTmp, kind, statements, nextId)
-        }
-      } else if (t.isIdentifier(target)) {
-        statements.push(t.variableDeclaration(kind, [t.variableDeclarator(target, accessExpr)]))
-      } else if (t.isObjectPattern(target) || t.isArrayPattern(target)) {
-        const nestedTmp = t.identifier(nextId())
-        statements.push(t.variableDeclaration('var', [t.variableDeclarator(nestedTmp, accessExpr)]))
-        desugarPattern(target, nestedTmp, kind, statements, nextId)
-      }
-    }
-  }
-
-  if (t.isArrayPattern(pattern)) {
-    for (let i = 0; i < pattern.elements.length; i++) {
-      const elem = pattern.elements[i]
-      if (!elem) continue
-
-      if (t.isRestElement(elem)) {
-        const target = elem.argument as t.Identifier
-        const sliceExpr = t.callExpression(
-          t.memberExpression(
-            t.memberExpression(
-              t.memberExpression(t.identifier('Array'), t.identifier('prototype')),
-              t.identifier('slice')
-            ),
-            t.identifier('call')
-          ),
-          [source, t.numericLiteral(i)]
-        )
-        statements.push(t.variableDeclaration(kind, [t.variableDeclarator(target, sliceExpr)]))
-        break
-      }
-
-      const accessExpr = t.memberExpression(source, t.numericLiteral(i), true)
-
-      if (t.isAssignmentPattern(elem)) {
-        const valTmp = t.identifier(nextId())
-        statements.push(t.variableDeclaration('var', [t.variableDeclarator(valTmp, accessExpr)]))
-        const target = elem.left as t.Identifier
-        statements.push(t.variableDeclaration(kind, [t.variableDeclarator(target,
-          t.conditionalExpression(
-            t.binaryExpression('!==', valTmp, t.identifier('undefined')),
-            valTmp,
-            elem.right
-          )
-        )]))
-      } else if (t.isIdentifier(elem)) {
-        statements.push(t.variableDeclaration(kind, [t.variableDeclarator(elem, accessExpr)]))
-      } else if (t.isObjectPattern(elem) || t.isArrayPattern(elem)) {
-        const nestedTmp = t.identifier(nextId())
-        statements.push(t.variableDeclaration('var', [t.variableDeclarator(nestedTmp, accessExpr)]))
-        desugarPattern(elem, nestedTmp, kind, statements, nextId)
-      }
-    }
-  }
+  desugarPatternImpl(pattern, source, kind, statements, nextId)
 }
 
 function desugarAssignmentPattern(
@@ -846,235 +835,111 @@ function desugarAssignmentPattern(
   statements: t.Statement[],
   nextId: () => string
 ) {
-  if (t.isObjectPattern(pattern)) {
-    const restExcludes: string[] = []
-    for (const prop of pattern.properties) {
-      if (t.isRestElement(prop)) {
-        // Object rest in assignment: ({ a, ...rest } = obj)
-        const restTarget = prop.argument as t.LVal
-        const restTmp = t.identifier(nextId())
-        const keysTmp = t.identifier(nextId())
-        const iTmp = t.identifier(nextId())
-        statements.push(t.variableDeclaration('var', [t.variableDeclarator(restTmp, t.objectExpression([]))]))
-        statements.push(t.variableDeclaration('var', [
-          t.variableDeclarator(keysTmp, t.callExpression(
-            t.memberExpression(t.identifier('Object'), t.identifier('keys')),
-            [source]
-          ))
-        ]))
-        const excludeChecks = restExcludes.map(k =>
-          t.binaryExpression('!==', t.memberExpression(keysTmp, iTmp, true), t.stringLiteral(k))
-        )
-        const condition: t.Expression = excludeChecks.length > 0
-          ? (excludeChecks as t.Expression[]).reduce((a, b) => t.logicalExpression('&&', a, b))
-          : t.booleanLiteral(true)
-        statements.push(t.forStatement(
-          t.variableDeclaration('var', [t.variableDeclarator(iTmp, t.numericLiteral(0))]),
-          t.binaryExpression('<', iTmp, t.memberExpression(keysTmp, t.identifier('length'))),
-          t.updateExpression('++', iTmp),
-          t.blockStatement([
-            t.ifStatement(condition, t.blockStatement([
-              t.expressionStatement(t.assignmentExpression('=',
-                t.memberExpression(restTmp, t.memberExpression(keysTmp, iTmp, true), true),
-                t.memberExpression(source, t.memberExpression(keysTmp, iTmp, true), true)
-              ))
-            ]))
-          ])
-        ))
-        statements.push(t.expressionStatement(t.assignmentExpression('=', restTarget, restTmp)))
-        continue
-      }
-
-      const objProp = prop as t.ObjectProperty
-      const keyName = !objProp.computed && t.isIdentifier(objProp.key) ? objProp.key.name : null
-      if (keyName) restExcludes.push(keyName)
-
-      const accessExpr = !objProp.computed && t.isIdentifier(objProp.key)
-        ? t.memberExpression(source, t.stringLiteral(objProp.key.name), true)
-        : t.memberExpression(source, objProp.key as t.Expression, true)
-      const target = objProp.value
-
-      if (t.isAssignmentPattern(target)) {
-        const valTmp = t.identifier(nextId())
-        statements.push(t.variableDeclaration('var', [t.variableDeclarator(valTmp, accessExpr)]))
-        const withDefault = t.conditionalExpression(
-          t.binaryExpression('!==', valTmp, t.identifier('undefined')),
-          valTmp,
-          target.right
-        )
-        if (t.isIdentifier(target.left)) {
-          statements.push(t.expressionStatement(t.assignmentExpression('=', target.left, withDefault)))
-        } else if (t.isObjectPattern(target.left) || t.isArrayPattern(target.left)) {
-          const nestedTmp = t.identifier(nextId())
-          statements.push(t.variableDeclaration('var', [t.variableDeclarator(nestedTmp, withDefault)]))
-          desugarAssignmentPattern(target.left, nestedTmp, statements, nextId)
-        }
-      } else if (t.isIdentifier(target)) {
-        statements.push(t.expressionStatement(t.assignmentExpression('=', target, accessExpr)))
-      } else if (t.isObjectPattern(target) || t.isArrayPattern(target)) {
-        const nestedTmp = t.identifier(nextId())
-        statements.push(t.variableDeclaration('var', [t.variableDeclarator(nestedTmp, accessExpr)]))
-        desugarAssignmentPattern(target, nestedTmp, statements, nextId)
-      }
-    }
-  }
-
-  if (t.isArrayPattern(pattern)) {
-    for (let i = 0; i < pattern.elements.length; i++) {
-      const elem = pattern.elements[i]
-      if (!elem) continue
-
-      if (t.isRestElement(elem)) {
-        // Array rest in assignment: ([a, ...rest] = arr)
-        const restTarget = elem.argument as t.LVal
-        const sliceExpr = t.callExpression(
-          t.memberExpression(
-            t.memberExpression(
-              t.memberExpression(t.identifier('Array'), t.identifier('prototype')),
-              t.identifier('slice')
-            ),
-            t.identifier('call')
-          ),
-          [source, t.numericLiteral(i)]
-        )
-        statements.push(t.expressionStatement(t.assignmentExpression('=', restTarget, sliceExpr)))
-        break
-      }
-
-      const accessExpr = t.memberExpression(source, t.numericLiteral(i), true)
-
-      if (t.isAssignmentPattern(elem)) {
-        const valTmp = t.identifier(nextId())
-        statements.push(t.variableDeclaration('var', [t.variableDeclarator(valTmp, accessExpr)]))
-        const withDefault = t.conditionalExpression(
-          t.binaryExpression('!==', valTmp, t.identifier('undefined')),
-          valTmp,
-          elem.right
-        )
-        if (t.isIdentifier(elem.left)) {
-          statements.push(t.expressionStatement(t.assignmentExpression('=', elem.left, withDefault)))
-        } else if (t.isObjectPattern(elem.left) || t.isArrayPattern(elem.left)) {
-          const nestedTmp = t.identifier(nextId())
-          statements.push(t.variableDeclaration('var', [t.variableDeclarator(nestedTmp, withDefault)]))
-          desugarAssignmentPattern(elem.left, nestedTmp, statements, nextId)
-        }
-      } else if (t.isIdentifier(elem)) {
-        statements.push(t.expressionStatement(t.assignmentExpression('=', elem, accessExpr)))
-      } else if (t.isObjectPattern(elem) || t.isArrayPattern(elem)) {
-        const nestedTmp = t.identifier(nextId())
-        statements.push(t.variableDeclaration('var', [t.variableDeclarator(nestedTmp, accessExpr)]))
-        desugarAssignmentPattern(elem, nestedTmp, statements, nextId)
-      }
-    }
-  }
+  desugarPatternImpl(pattern, source, null, statements, nextId)
 }
 
-function desugarFunctionParams(
-  params: (t.Identifier | t.Pattern | t.RestElement)[],
-  body: t.Statement[],
+function desugarPatternImpl(
+  pattern: t.ObjectPattern | t.ArrayPattern,
+  source: t.Expression,
+  kind: 'var' | 'let' | 'const' | null,
+  statements: t.Statement[],
   nextId: () => string
 ) {
-  const prependStatements: t.Statement[] = []
-  for (let i = params.length - 1; i >= 0; i--) {
-    const param = params[i]
-    if (t.isIdentifier(param)) continue
-
-    const tmpName = nextId()
-    const tmpId = t.identifier(tmpName)
-
-    if (t.isRestElement(param)) {
-      const restTarget = param.argument as t.Identifier
-      const sliceExpr = t.callExpression(
-        t.memberExpression(
-          t.memberExpression(
-            t.memberExpression(t.identifier('Array'), t.identifier('prototype')),
-            t.identifier('slice')
-          ),
-          t.identifier('call')
-        ),
-        [t.identifier('arguments'), t.numericLiteral(i)]
-      )
-      prependStatements.unshift(
-        t.variableDeclaration('var', [t.variableDeclarator(restTarget, sliceExpr)])
-      )
-      params.splice(i, 1)
-      continue
+  const temporary = (value: t.Expression, output = statements): t.Identifier => {
+    const id = t.identifier(nextId())
+    output.push(t.variableDeclaration('var', [t.variableDeclarator(id, value)]))
+    return id
+  }
+  const bind = (target: t.Node, value: t.Expression, output: t.Statement[]) => {
+    let destination = t.isAssignmentPattern(target) ? target.left : target
+    // Assignment references are evaluated before IteratorStep/GetV/defaults.
+    if (!kind && t.isMemberExpression(destination)) {
+      const object = temporary(destination.object as t.Expression, output)
+      const key = destination.computed
+        ? temporary(destination.property as t.Expression, output)
+        : destination.property
+      destination = t.memberExpression(object, key as t.Expression, destination.computed)
     }
-
-    if (t.isAssignmentPattern(param)) {
-      const innerParam = param.left
-      if (t.isIdentifier(innerParam)) {
-        // Simple default: function(x = 5) → function(x) { if (x === undefined) x = default }
-        const valTmp = t.identifier(nextId())
-        params[i] = innerParam
-        prependStatements.unshift(
-          t.variableDeclaration('var', [t.variableDeclarator(valTmp, t.cloneNode(innerParam))]),
-          t.ifStatement(
-            t.binaryExpression('===', valTmp, t.identifier('undefined')),
-            t.blockStatement([
-              t.expressionStatement(t.assignmentExpression('=', t.cloneNode(innerParam), param.right))
-            ])
-          )
-        )
-      } else {
-        // Complex default: function({ x } = {}) → function(_p) { var _t = _p === undefined ? default : _p; desugar _t }
-        params[i] = tmpId
-        const valTmp = t.identifier(nextId())
-        prependStatements.unshift(
-          t.variableDeclaration('var', [t.variableDeclarator(valTmp, t.conditionalExpression(
-            t.binaryExpression('===', t.cloneNode(tmpId), t.identifier('undefined')),
-            param.right,
-            t.cloneNode(tmpId)
-          ))])
-        )
-        const stmts: t.Statement[] = []
-        desugarPattern(innerParam as t.ObjectPattern | t.ArrayPattern, valTmp, 'var', stmts, nextId)
-        prependStatements.push(...stmts)
-      }
-      continue
+    if (t.isAssignmentPattern(target)) {
+      const current = temporary(value, output)
+      value = t.conditionalExpression(
+        t.binaryExpression('===', current, t.unaryExpression('void', t.numericLiteral(0))),
+        target.right,
+        current
+      )
     }
-
-    if (t.isObjectPattern(param) || t.isArrayPattern(param)) {
-      params[i] = tmpId
-      const stmts: t.Statement[] = []
-      desugarPattern(param, tmpId, 'var', stmts, nextId)
-      prependStatements.push(...stmts)
+    if (t.isObjectPattern(destination) || t.isArrayPattern(destination)) {
+      desugarPatternImpl(destination, temporary(value, output), kind, output, nextId)
+    } else if (kind && t.isIdentifier(destination)) {
+      output.push(t.variableDeclaration(kind, [t.variableDeclarator(destination, value)]))
+    } else {
+      output.push(t.expressionStatement(t.assignmentExpression('=', destination as t.LVal, value)))
     }
   }
-  body.unshift(...prependStatements)
+
+  if (t.isObjectPattern(pattern)) {
+    statements.push(t.expressionStatement(iteratorIntrinsic('RequireObject', [source])))
+    const excludes: t.Expression[] = []
+    for (const property of pattern.properties) {
+      if (t.isRestElement(property)) {
+        bind(property.argument, iteratorIntrinsic('ObjectRest', [source, t.arrayExpression(excludes)]), statements)
+        continue
+      }
+      let key: t.Expression
+      if (property.computed) {
+        key = temporary(iteratorIntrinsic('PropertyKey', [property.key as t.Expression]))
+      } else if (t.isIdentifier(property.key)) {
+        key = t.stringLiteral(property.key.name)
+      } else {
+        key = t.stringLiteral(String((property.key as t.StringLiteral | t.NumericLiteral).value))
+      }
+      excludes.push(key)
+      bind(property.value, t.memberExpression(source, key, true), statements)
+    }
+    return
+  }
+
+  const iterator = temporary(iteratorIntrinsic('IteratorStart', [source]))
+  const body: t.Statement[] = []
+  for (const element of pattern.elements) {
+    if (!element) {
+      body.push(t.expressionStatement(iteratorIntrinsic('IteratorStep', [iterator, t.booleanLiteral(true)])))
+    } else if (t.isRestElement(element)) {
+      bind(element.argument, iteratorIntrinsic('IteratorRest', [iterator]), body)
+    } else {
+      bind(element, iteratorIntrinsic('IteratorStep', [iterator]), body)
+    }
+  }
+  const error = t.identifier(nextId())
+  statements.push(t.tryStatement(
+    transparentBlock(body),
+    t.catchClause(error, t.blockStatement([
+      t.expressionStatement(iteratorIntrinsic('IteratorClose', [iterator, t.booleanLiteral(true)])),
+      t.throwStatement(error),
+    ])),
+    t.blockStatement([t.expressionStatement(iteratorIntrinsic('IteratorClose', [iterator]))])
+  ))
 }
+
 
 function buildConcatArgs(elements: (t.Expression | t.SpreadElement)[]): t.Expression {
   const groups: t.Expression[] = []
-  let currentArr: t.Expression[] = []
-  for (const el of elements) {
-    if (t.isSpreadElement(el)) {
-      if (currentArr.length > 0) {
-        groups.push(t.arrayExpression(currentArr))
-        currentArr = []
+  let current: t.Expression[] = []
+  for (const element of elements) {
+    if (t.isSpreadElement(element)) {
+      if (current.length) {
+        groups.push(t.arrayExpression(current))
+        current = []
       }
-      // Use Array.from() so that custom iterables (Symbol.iterator) are
-      // properly consumed. Plain concat() only handles arrays/primitives.
-      groups.push(t.callExpression(
-        t.memberExpression(t.identifier('Array'), t.identifier('from')),
-        [el.argument]
-      ))
+      groups.push(iteratorIntrinsic('IteratorRest', [iteratorIntrinsic('IteratorStart', [element.argument])]))
     } else {
-      currentArr.push(el)
+      current.push(element)
     }
   }
-  if (currentArr.length > 0) {
-    groups.push(t.arrayExpression(currentArr))
-  }
-  if (groups.length === 0) return t.arrayExpression([])
-  let result = groups[0]
-  if (!t.isArrayExpression(result)) {
-    result = t.callExpression(t.memberExpression(t.arrayExpression([]), t.identifier('concat')), [result])
-  }
-  for (let i = 1; i < groups.length; i++) {
-    result = t.callExpression(t.memberExpression(result, t.identifier('concat')), [groups[i]])
-  }
-  return result
+  if (current.length) groups.push(t.arrayExpression(current))
+  if (!groups.length) return t.arrayExpression([])
+  if (groups.length === 1) return groups[0]
+  return iteratorIntrinsic('FlattenArrays', [t.arrayExpression(groups)])
 }
 
 function getEnclosingBody(path: any): t.Statement[] {
@@ -1168,6 +1033,7 @@ function buildObjectLiteralSequence(
       property.generator,
       property.async
     )
+    fn.extra = { ...property.extra }
     const descriptorProps: t.ObjectProperty[] = []
     if (property.kind === 'method') {
       descriptorProps.push(t.objectProperty(t.identifier('value'), fn))
@@ -1382,29 +1248,20 @@ function desugarOptionalChain(path: any, nextId: () => string): t.Expression {
 export function normalizeAst(file: t.File): t.File {
   // Pass 1: Desugar destructuring, spread/rest, for-of/for-in/for-await-of, object methods, optional chaining, function params
   let desugarCounter = 0
-  const nextId = () => `_d${desugarCounter++}`
+  const reservedNames = new Set<string>()
+  const nextId = () => {
+    let name: string
+    do { name = `_d${desugarCounter++}` } while (reservedNames.has(name))
+    reservedNames.add(name)
+    return name
+  }
+  let templateSiteCounter = 0
+
+  // Normalize parameters before object/class visitors move their method bodies.
+  traverse(file, { Function: normalizeFunctionParameters })
+  traverse(file, { Identifier(path) { reservedNames.add(path.node.name) } })
 
   traverse(file, {
-    FunctionDeclaration(path) {
-      if (path.node.params.some((p: any) => !t.isIdentifier(p))) {
-        desugarFunctionParams(path.node.params as any, path.node.body.body, nextId)
-      }
-    },
-    FunctionExpression(path) {
-      if (path.node.params.some((p: any) => !t.isIdentifier(p))) {
-        desugarFunctionParams(path.node.params as any, path.node.body.body, nextId)
-      }
-    },
-    ObjectMethod(path) {
-      if (path.node.params.some((p: any) => !t.isIdentifier(p))) {
-        desugarFunctionParams(path.node.params as any, path.node.body.body, nextId)
-      }
-    },
-    ClassMethod(path) {
-      if (path.node.params.some((p: any) => !t.isIdentifier(p))) {
-        desugarFunctionParams(path.node.params as any, path.node.body.body, nextId)
-      }
-    },
     BigIntLiteral(path: any) {
       // Desugar 123n → BigInt("123") to avoid constant pool JSON serialization issues
       path.replaceWith(
@@ -1415,18 +1272,17 @@ export function normalizeAst(file: t.File): t.File {
       const node = path.node as t.TaggedTemplateExpression
       const quasis = node.quasi.quasis
       const cookedElements = quasis.map((q: t.TemplateElement) =>
-        q.value.cooked != null ? t.stringLiteral(q.value.cooked) : t.identifier('undefined')
+        q.value.cooked != null ? t.stringLiteral(q.value.cooked) : t.unaryExpression('void', t.numericLiteral(0))
       )
       const rawElements = quasis.map((q: t.TemplateElement) =>
         t.stringLiteral(q.value.raw)
       )
       const stringsArg = t.callExpression(
-        t.memberExpression(t.identifier('Object'), t.identifier('assign')),
+        t.identifier('@script-vm/intrinsic/GetTemplateObject'),
         [
+          t.numericLiteral(templateSiteCounter++),
           t.arrayExpression(cookedElements),
-          t.objectExpression([
-            t.objectProperty(t.identifier('raw'), t.arrayExpression(rawElements)),
-          ]),
+          t.arrayExpression(rawElements),
         ]
       )
       path.replaceWith(
@@ -1447,63 +1303,17 @@ export function normalizeAst(file: t.File): t.File {
         }
       }
       if (modified) {
-        path.replaceWithMultiple(newStatements)
+        if (path.parentPath.isForStatement() && path.key === 'init') {
+          newStatements.push(t.expressionStatement(t.unaryExpression('void', t.numericLiteral(0))))
+          const init = t.doExpression(transparentBlock(newStatements))
+          init.extra = { ...init.extra, vmLoopLexicalInit: path.node.kind !== 'var' }
+          path.replaceWith(init)
+        } else {
+          path.replaceWithMultiple(newStatements)
+        }
       }
     },
 
-    'FunctionDeclaration|FunctionExpression'(path: any) {
-      const node = path.node as t.FunctionDeclaration | t.FunctionExpression
-      const bodyInserts: t.Statement[] = []
-      let modified = false
-      const newParams: t.Node[] = []
-      for (let i = 0; i < node.params.length; i++) {
-        const param = node.params[i]
-        if (t.isObjectPattern(param) || t.isArrayPattern(param)) {
-          modified = true
-          const tempId = t.identifier(nextId())
-          newParams.push(tempId)
-          desugarPattern(param, tempId, 'var', bodyInserts, nextId)
-        } else if (t.isRestElement(param)) {
-          modified = true
-          const restName = (param.argument as t.Identifier).name
-          newParams.push(t.identifier(nextId())) // dummy param
-          bodyInserts.push(t.variableDeclaration('var', [t.variableDeclarator(
-            t.identifier(restName),
-            t.callExpression(
-              t.memberExpression(
-                t.memberExpression(
-                  t.memberExpression(t.identifier('Array'), t.identifier('prototype')),
-                  t.identifier('slice')
-                ),
-                t.identifier('call')
-              ),
-              [t.identifier('arguments'), t.numericLiteral(i)]
-            )
-          )]))
-        } else if (t.isAssignmentPattern(param)) {
-          modified = true
-          const paramName = (param.left as t.Identifier).name
-          const tempId = t.identifier(nextId())
-          newParams.push(tempId)
-          bodyInserts.push(t.variableDeclaration('var', [t.variableDeclarator(
-            t.identifier(paramName),
-            t.conditionalExpression(
-              t.binaryExpression('!==', tempId, t.identifier('undefined')),
-              tempId,
-              param.right
-            )
-          )]))
-        } else {
-          newParams.push(param)
-        }
-      }
-      if (modified) {
-        node.params = newParams as any
-        if (t.isBlockStatement(node.body)) {
-          node.body.body.unshift(...bodyInserts)
-        }
-      }
-    },
 
     AssignmentExpression(path) {
       if (t.isObjectPattern(path.node.left) || t.isArrayPattern(path.node.left)) {
@@ -1513,11 +1323,18 @@ export function normalizeAst(file: t.File): t.File {
         desugarAssignmentPattern(path.node.left as t.ObjectPattern | t.ArrayPattern, tempId, statements, nextId)
         if (path.parentPath.isExpressionStatement()) {
           path.parentPath.replaceWithMultiple(statements)
+        } else {
+          // An internal do-expression keeps evaluation in the original frame,
+          // including yield/await and references to this/arguments.
+          statements.push(t.expressionStatement(t.cloneNode(tempId)))
+          path.replaceWith(t.doExpression(transparentBlock(statements)))
         }
       }
     },
 
     CallExpression(path) {
+      // Class lowering must preserve super construction and new.target.
+      if (t.isSuper(path.node.callee)) return
       if (t.isImport(path.node.callee)) {
         path.node.callee = t.identifier('__vm_import')
         return
@@ -1527,34 +1344,23 @@ export function normalizeAst(file: t.File): t.File {
       if (t.isMemberExpression(callee)) {
         const objTmp = t.identifier(nextId())
         const argsExpr = buildConcatArgs(path.node.arguments as (t.Expression | t.SpreadElement)[])
-        // obj.method(...args) → (_o = obj, _o.method.apply(_o, args))
+        // Evaluate the receiver and method once, then consume arguments.
         path.replaceWith(
           t.sequenceExpression([
             t.assignmentExpression('=', objTmp, callee.object as t.Expression),
-            t.callExpression(
-              t.memberExpression(
-                t.memberExpression(objTmp, callee.property, callee.computed),
-                t.identifier('apply')
-              ),
-              [objTmp, argsExpr]
-            )
+            iteratorIntrinsic('Apply', [
+              t.memberExpression(objTmp, callee.property, callee.computed),
+              objTmp,
+              argsExpr,
+            ]),
           ])
         )
-        // Declare the temp var in the enclosing scope
-        const fnPath = path.getFunctionParent() || path.scope.getProgramParent().path
-        if (fnPath && t.isProgram((fnPath.node as any))) {
-          (fnPath.node as t.Program).body.unshift(t.variableDeclaration('var', [t.variableDeclarator(objTmp)]))
-        } else if (fnPath && (t.isFunctionDeclaration(fnPath.node) || t.isFunctionExpression(fnPath.node))) {
-          (fnPath.node.body as t.BlockStatement).body.unshift(t.variableDeclaration('var', [t.variableDeclarator(objTmp)]))
-        }
+        declareTempBindings(path, [objTmp])
         path.skip()
       } else {
         const argsExpr = buildConcatArgs(path.node.arguments as (t.Expression | t.SpreadElement)[])
         path.replaceWith(
-          t.callExpression(
-            t.memberExpression(callee as t.Expression, t.identifier('apply')),
-            [t.identifier('undefined'), argsExpr]
-          )
+          iteratorIntrinsic('Apply', [callee as t.Expression, t.unaryExpression('void', t.numericLiteral(0)), argsExpr])
         )
         path.skip()
       }
@@ -1564,10 +1370,7 @@ export function normalizeAst(file: t.File): t.File {
       if (!path.node.arguments.some(arg => t.isSpreadElement(arg))) return
       const argsExpr = buildConcatArgs(path.node.arguments as (t.Expression | t.SpreadElement)[])
       path.replaceWith(
-        t.callExpression(
-          t.memberExpression(t.identifier('Reflect'), t.identifier('construct')),
-          [path.node.callee as t.Expression, argsExpr]
-        )
+        iteratorIntrinsic('Construct', [path.node.callee as t.Expression, argsExpr])
       )
       path.skip()
     },
@@ -1628,6 +1431,38 @@ export function normalizeAst(file: t.File): t.File {
     },
 
     ForOfStatement(path) {
+      if (!path.node.await) {
+        const iterator = t.identifier(nextId())
+        const value = t.identifier(nextId())
+        const error = t.identifier(nextId())
+        const left = path.node.left
+        const binding = t.isVariableDeclaration(left)
+          ? t.variableDeclaration(left.kind, [t.variableDeclarator(left.declarations[0].id, value)])
+          : t.expressionStatement(t.assignmentExpression('=', left as t.LVal, value))
+        const loop = t.whileStatement(t.booleanLiteral(true), t.blockStatement([
+          t.variableDeclaration('var', [t.variableDeclarator(value, iteratorIntrinsic('IteratorStep', [iterator]))]),
+          t.ifStatement(t.memberExpression(iterator, t.identifier('done')), t.breakStatement()),
+          binding,
+          path.node.body,
+        ]))
+        const labeled = path.parentPath.isLabeledStatement()
+        const loopStatement = labeled
+          ? t.labeledStatement(t.cloneNode((path.parentPath.node as t.LabeledStatement).label), loop)
+          : loop
+        const replacement = [
+          t.variableDeclaration('var', [t.variableDeclarator(iterator, iteratorIntrinsic('IteratorStart', [path.node.right]))]),
+          t.tryStatement(t.blockStatement([loopStatement]),
+            t.catchClause(error, t.blockStatement([
+              t.expressionStatement(iteratorIntrinsic('IteratorClose', [iterator, t.booleanLiteral(true)])),
+              t.throwStatement(error),
+            ])),
+            t.blockStatement([t.expressionStatement(iteratorIntrinsic('IteratorClose', [iterator]))])
+          ),
+        ]
+        if (labeled) path.parentPath.replaceWithMultiple(replacement)
+        else path.replaceWithMultiple(replacement)
+        return
+      }
       const iterTmp = t.identifier(nextId())
       const resultTmp = t.identifier(nextId())
       const isAwait = (path.node as any).await
@@ -1713,44 +1548,17 @@ export function normalizeAst(file: t.File): t.File {
     },
 
     ForInStatement(path) {
-      const keysTmp = t.identifier(nextId())
-      const iTmp = t.identifier(nextId())
-
-      const keysExpr = t.callExpression(
-        t.memberExpression(t.identifier('Object'), t.identifier('keys')),
-        [path.node.right]
-      )
-
-      let loopVarDecl: t.Statement
-      if (t.isVariableDeclaration(path.node.left)) {
-        const decl = path.node.left.declarations[0]
-        loopVarDecl = t.variableDeclaration(path.node.left.kind, [
-          t.variableDeclarator(decl.id, t.memberExpression(keysTmp, iTmp, true))
-        ])
-      } else {
-        loopVarDecl = t.expressionStatement(
-          t.assignmentExpression('=', path.node.left as t.LVal, t.memberExpression(keysTmp, iTmp, true))
-        )
-      }
-
-      const bodyStatements = t.isBlockStatement(path.node.body)
-        ? [...path.node.body.body]
-        : [path.node.body]
-
-      path.replaceWithMultiple([
-        t.variableDeclaration('var', [t.variableDeclarator(keysTmp, keysExpr)]),
-        t.forStatement(
-          t.variableDeclaration('var', [t.variableDeclarator(iTmp, t.numericLiteral(0))]),
-          t.binaryExpression('<', iTmp, t.memberExpression(keysTmp, t.identifier('length'))),
-          t.updateExpression('++', iTmp),
-          t.blockStatement([loopVarDecl, ...bodyStatements])
-        ),
-      ])
+      // A host iterator preserves inherited enumeration, shadowing and deletion
+      // semantics while the VM still executes every user-visible loop body.
+      path.replaceWith(t.forOfStatement(
+        path.node.left,
+        iteratorIntrinsic('EnumerateKeys', [path.node.right]),
+        path.node.body
+      ))
     },
   })
 
   // Pass 2: Normalize arrows, classes, catch clause renaming
-  let catchCounter = 0
   const arrowCaptures = new WeakMap<t.Node, { thisId?: t.Identifier; argsId?: t.Identifier; newTargetId?: t.Identifier }>()
 
   const skipNonArrowVisitors = {
@@ -1775,7 +1583,7 @@ export function normalizeAst(file: t.File): t.File {
         ArrowFunctionExpression(p: any) { p.skip() },
         ThisExpression() { usesThis = true },
         Identifier(innerPath: any) {
-          if (innerPath.node.name === 'arguments') {
+          if (innerPath.node.name === 'arguments' && !innerPath.node.extra?.vmIntrinsicArguments && !innerPath.scope.getBinding('arguments')) {
             usesArguments = true
           }
         },
@@ -1805,7 +1613,7 @@ export function normalizeAst(file: t.File): t.File {
           }
 
           if (usesThis && !captures.thisId) {
-            captures.thisId = t.identifier(`_this${catchCounter++}`)
+            captures.thisId = t.identifier(nextId())
             getBody(enclosingNode).unshift(
               t.variableDeclaration('var', [
                 t.variableDeclarator(t.cloneNode(captures.thisId, true), t.thisExpression())
@@ -1814,7 +1622,7 @@ export function normalizeAst(file: t.File): t.File {
           }
 
           if (usesArguments && !captures.argsId) {
-            captures.argsId = t.identifier(`_arguments${catchCounter++}`)
+            captures.argsId = t.identifier(nextId())
             getBody(enclosingNode).unshift(
               t.variableDeclaration('var', [
                 t.variableDeclarator(t.cloneNode(captures.argsId, true), t.identifier('arguments'))
@@ -1823,7 +1631,7 @@ export function normalizeAst(file: t.File): t.File {
           }
 
           if (usesNewTarget && !captures.newTargetId) {
-            captures.newTargetId = t.identifier(`_newTarget${catchCounter++}`)
+            captures.newTargetId = t.identifier(nextId())
             getBody(enclosingNode).unshift(
               t.variableDeclaration('var', [
                 t.variableDeclarator(
@@ -1850,7 +1658,7 @@ export function normalizeAst(file: t.File): t.File {
               ...skipNonArrowVisitors,
               ArrowFunctionExpression(p: any) { p.skip() },
               Identifier(innerPath: any) {
-                if (innerPath.node.name === 'arguments') {
+                if (innerPath.node.name === 'arguments' && !innerPath.node.extra?.vmIntrinsicArguments && !innerPath.scope.getBinding('arguments')) {
                   innerPath.replaceWith(t.cloneNode(captures!.argsId!, true))
                 }
               },
@@ -1886,18 +1694,13 @@ export function normalizeAst(file: t.File): t.File {
         )
       )
 
-      // Desugar non-identifier params (destructuring, rest, defaults) on the
-      // newly created FunctionExpression. This must happen AFTER conversion so
-      // that rest-param desugaring (which uses `arguments`) references the
-      // FunctionExpression's own arguments, not the outer scope's.
       const newNode = path.node as unknown as t.FunctionExpression
-      if (newNode.params.some((p: any) => !t.isIdentifier(p))) {
-        desugarFunctionParams(newNode.params as any, (newNode.body as t.BlockStatement).body, nextId)
-      }
+      newNode.extra = { ...node.extra, scriptVmMethod: true }
+
     },
     CatchClause(path) {
       if (path.node.param && t.isIdentifier(path.node.param)) {
-        const nextName = `__catch_${path.node.param.name}_${catchCounter++}`
+        const nextName = nextId()
         path.scope.rename(path.node.param.name, nextName)
       }
     },
@@ -1906,7 +1709,7 @@ export function normalizeAst(file: t.File): t.File {
       const className = node.id ? node.id.name : '_AnonymousClass'
       const classId = t.identifier(className)
       path.replaceWith(
-        t.variableDeclaration('var', [t.variableDeclarator(classId, buildClassIife(node, classId))])
+        t.variableDeclaration('let', [t.variableDeclarator(classId, buildClassIife(node, classId))])
       )
     },
     ClassExpression(path) {

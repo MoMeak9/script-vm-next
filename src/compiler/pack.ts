@@ -42,9 +42,16 @@ export function packArtifact(artifact: ProgramArtifact): string {
 __vm_bridge.Object = Object;
 __vm_bridge.Proxy = Proxy;
 __vm_bridge.TypeError = TypeError;
+var __vm_hasGlobal = Reflect.has, __vm_getGlobal = Reflect.get, __vm_ReferenceError = ReferenceError;
+__vm_bridge.getGlobal = function(name, allowMissing) {
+  if (__vm_hasGlobal(__vm_global, name)) return __vm_getGlobal(__vm_global, name);
+  if (!allowMissing) throw new __vm_ReferenceError(name + ' is not defined');
+};
 var __vm_scope = new Proxy(__vm_global, { get: function(target, key) {
   if (key === ${JSON.stringify(artifact.notifyIdentifier)}) return __vm_bridge;
   return Reflect.get(target, key);
+}, has: function(target, key) {
+  return key === ${JSON.stringify(artifact.notifyIdentifier)} || Reflect.has(target, key);
 } });`
     : 'var __vm_scope = __vm_global;'
   const invocation = `(function(__vm_notify){${JS_PREAMBLE}

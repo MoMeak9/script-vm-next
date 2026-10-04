@@ -68,6 +68,23 @@ for (const example of [
   });
 }
 
+test('the ES6 compatibility example runs without caller-side transforms', async ({ page }) => {
+  await openPlayground(page);
+  await page.locator('#example-select').selectOption('es6-compatibility');
+  await compile(page);
+  await run(page);
+
+  for (const output of [
+    'Set 解构 → 1 2, 3',
+    '参数作用域 → 1, 2',
+    '静态继承 → 42',
+    '模板对象复用 → true',
+    '模板对象冻结 → true true',
+  ]) {
+    await expect(logs(page)).toContainText(output);
+  }
+});
+
 test('syntax errors show their source location and can be corrected', async ({ page }) => {
   await openPlayground(page);
   await editSource(page, 'const valid = 1;\nconst broken = ;');

@@ -140,18 +140,21 @@ function collectModules(
 }
 
 // ────────────────────────────────────────────────
-// Topological sort with cycle detection
+// Dependency evaluation order with cycle detection
 // ────────────────────────────────────────────────
 
-function topoSort(modules: Map<string, ModuleInfo>): string[] {
+function topoSort(modules: Map<string, ModuleInfo>, entryId: string, allowCycles: boolean): { sorted: string[]; cyclic: boolean } {
   const sorted: string[] = []
   const visited = new Set<string>()
   const visiting = new Set<string>() // grey nodes for cycle detection
+  let cyclic = false
 
   function dfs(id: string) {
     if (visited.has(id)) return
     if (visiting.has(id)) {
-      throw new Error(`Circular dependency detected involving '${id}'`)
+      if (!allowCycles) throw new Error(`Circular dependency detected involving '${id}'`)
+      cyclic = true
+      return
     }
     visiting.add(id)
     const mod = modules.get(id)
@@ -165,11 +168,12 @@ function topoSort(modules: Map<string, ModuleInfo>): string[] {
     sorted.push(id)
   }
 
-  for (const id of modules.keys()) {
-    dfs(id)
-  }
+  // Start at the entry: module discovery inserts dependencies first, which
+  // would otherwise choose the wrong evaluation order within a cycle.
+  dfs(entryId)
+  for (const id of modules.keys()) dfs(id)
 
-  return sorted
+  return { sorted, cyclic }
 }
 
 // ────────────────────────────────────────────────
@@ -199,38 +203,37 @@ function dependencyId(specifier: string, moduleId: string, entryDir: string): st
   return path.relative(entryDir, fs.realpathSync(resolved))
 }
 
-/** Resolve the public names before rewriting, including ambiguous star exports. */
+/** Resolve names and binding identities independently of module evaluation. */
 function collectModuleExports(
   modules: Map<string, ModuleInfo>,
   sortedIds: string[],
   externals: Set<string>,
   entryDir: string
 ): Map<string, ModuleExports> {
-  const all = new Map<string, ModuleExports>()
-  for (const id of sortedIds) {
-    const ast = parseModule(modules.get(id)!.source)
+  const records = new Map<string, { explicit: ModuleExports; imports: ModuleExports; stars: string[] }>()
+  const internal = (source: string) => isRelative(source) && !externals.has(source)
+  const from = (id: string, source: string, local: string, namespace = false): ExportBinding => ({
+    source, local, namespace,
+    identity: `${internal(source) ? dependencyId(source, id, entryDir) : source}:${namespace ? '*' : local}`,
+  })
+  for (const [id, module] of modules) {
+    const ast = parseModule(module.source)
     const explicit: ModuleExports = new Map()
-    const imported = new Map<string, ExportBinding>()
+    const imports: ModuleExports = new Map()
     const stars: string[] = []
-    const from = (source: string, local: string, namespace = false): ExportBinding => {
-      const internal = isRelative(source) && !externals.has(source)
-      const depId = internal ? dependencyId(source, id, entryDir) : source
-      const original = internal && !namespace ? all.get(depId)?.get(local) : undefined
-      if (internal && !namespace && !original) {
-        throw new Error(`Module '${source}' has no unambiguous export named '${local}' (imported by '${id}')`)
-      }
-      return { source, local, namespace, identity: original?.identity ?? `${depId}:${namespace ? '*' : local}` }
-    }
     for (const node of ast.program.body) {
       if (!types.isImportDeclaration(node)) continue
       for (const spec of node.specifiers) {
         const namespace = types.isImportNamespaceSpecifier(spec)
         const name = types.isImportSpecifier(spec) ? exportName(spec.imported) : 'default'
-        imported.set(spec.local.name, from(node.source.value, name, namespace))
+        imports.set(spec.local.name, from(id, node.source.value, name, namespace))
       }
     }
     for (const node of ast.program.body) {
       if (types.isExportAllDeclaration(node)) {
+        if (!internal(node.source.value)) {
+          throw new Error(`Star re-exports from external module '${node.source.value}' require native ESM dependency linking, which this compiler does not yet support`)
+        }
         stars.push(node.source.value)
       } else if (types.isExportDefaultDeclaration(node)) {
         const decl = node.declaration
@@ -246,34 +249,71 @@ function collectModuleExports(
         for (const spec of node.specifiers) {
           const name = exportName(spec.exported)
           if (types.isExportNamespaceSpecifier(spec)) {
-            explicit.set(name, from(node.source!.value, '*', true))
+            explicit.set(name, from(id, node.source!.value, '*', true))
           } else if (types.isExportSpecifier(spec)) {
             const local = exportName(spec.local)
-            explicit.set(name, node.source ? from(node.source.value, local)
-              : imported.get(local) ?? { local, identity: `${id}:${local}` })
+            explicit.set(name, node.source ? from(id, node.source.value, local)
+              : imports.get(local) ?? { local, identity: `${id}:${local}` })
           }
         }
       }
     }
-    const merged: ModuleExports = new Map(explicit)
-    const ambiguous = new Set<string>()
-    for (const source of stars) {
-      if (!isRelative(source) || externals.has(source)) {
-        throw new Error(`Star re-exports from external module '${source}' are unsupported; list the exported names explicitly`)
-      }
-      const exports = all.get(dependencyId(source, id, entryDir))!
-      for (const [name, binding] of exports) {
-        if (name === 'default' || explicit.has(name) || ambiguous.has(name)) continue
-        const previous = merged.get(name)
-        if (previous && previous.identity !== binding.identity) {
-          merged.delete(name)
-          ambiguous.add(name)
-        } else {
-          merged.set(name, { local: name, source, identity: binding.identity })
-        }
+    records.set(id, { explicit, imports, stars })
+  }
+
+  // Mirrors GetExportedNames/ResolveExport: visiting the same module/name pair
+  // breaks a cyclic search, while distinct star bindings remain ambiguous.
+  const namesOf = (id: string, seen = new Set<string>()): Set<string> => {
+    if (seen.has(id)) return new Set()
+    seen.add(id)
+    const record = records.get(id)!
+    const names = new Set(record.explicit.keys())
+    for (const source of record.stars) {
+      for (const name of namesOf(dependencyId(source, id, entryDir), seen)) {
+        if (name !== 'default') names.add(name)
       }
     }
-    all.set(id, merged)
+    return names
+  }
+  const ambiguous = Symbol('ambiguous export')
+  type Resolution = ExportBinding | typeof ambiguous | null
+  const resolve = (id: string, name: string, seen = new Set<string>()): Resolution => {
+    const key = JSON.stringify([id, name])
+    if (seen.has(key)) return null
+    seen.add(key)
+    const record = records.get(id)!
+    const direct = record.explicit.get(name)
+    if (direct) {
+      if (!direct.source || direct.namespace || !internal(direct.source)) return direct
+      const original = resolve(dependencyId(direct.source, id, entryDir), direct.local, seen)
+      return original && original !== ambiguous ? { ...direct, identity: original.identity } : original
+    }
+    if (name === 'default') return null
+    let found: ExportBinding | null = null
+    for (const source of record.stars) {
+      const original = resolve(dependencyId(source, id, entryDir), name, seen)
+      if (original === ambiguous) return ambiguous
+      if (!original) continue
+      if (found && found.identity !== original.identity) return ambiguous
+      found = { source, local: name, identity: original.identity }
+    }
+    return found
+  }
+  const all = new Map<string, ModuleExports>()
+  for (const id of sortedIds) {
+    const resolved: ModuleExports = new Map()
+    for (const name of namesOf(id)) {
+      const binding = resolve(id, name)
+      if (binding && binding !== ambiguous) resolved.set(name, binding)
+    }
+    for (const binding of [...records.get(id)!.imports.values(), ...records.get(id)!.explicit.values()]) {
+      if (!binding.source || binding.namespace || !internal(binding.source)) continue
+      const original = resolve(dependencyId(binding.source, id, entryDir), binding.local)
+      if (!original || original === ambiguous) {
+        throw new Error(`Module '${binding.source}' has no unambiguous export named '${binding.local}' (imported by '${id}')`)
+      }
+    }
+    all.set(id, resolved)
   }
   return all
 }
@@ -293,7 +333,8 @@ function transformModule(
   exports: ModuleExports,
   notifyIdentifier: string,
   registryIdentifier: string,
-  exportsIdentifier: string
+  exportsIdentifier: string,
+  instantiateBeforeEvaluation = false
 ): { code: string; exportNames: string[] } {
   const ast = parseModule(source)
   let program: import('@babel/traverse').NodePath<types.Program>
@@ -328,14 +369,45 @@ function transformModule(
       const binding = scope.getBinding(name)
       return binding !== undefined && publishedBindings.has(binding)
     })
+  // A notification after the entire pattern would miss writes observed by the
+  // next default initializer/getter, or completed before a later target throws.
+  // Setter references publish each individual binding write at its actual step.
+  const publishedTarget = (node: types.Node, scope: import('@babel/traverse').Scope): types.Node => {
+    if (types.isIdentifier(node) && changesExport(node, scope)) {
+      const value = program!.scope.generateUidIdentifier('assigned')
+      return types.memberExpression(types.objectExpression([
+        types.objectMethod('set', types.identifier('value'), [value], types.blockStatement([
+          types.expressionStatement(notify(types.assignmentExpression('=', types.cloneNode(node), types.cloneNode(value)))),
+        ])),
+      ]), types.identifier('value'))
+    }
+    if (types.isArrayPattern(node)) {
+      node.elements = node.elements.map(item => item ? publishedTarget(item, scope) as typeof item : null)
+    } else if (types.isObjectPattern(node)) {
+      for (const property of node.properties) {
+        if (types.isRestElement(property)) property.argument = publishedTarget(property.argument, scope) as typeof property.argument
+        else {
+          property.value = publishedTarget(property.value, scope) as typeof property.value
+          property.shorthand = false
+        }
+      }
+    } else if (types.isAssignmentPattern(node)) {
+      node.left = publishedTarget(node.left, scope) as typeof node.left
+    } else if (types.isRestElement(node)) {
+      node.argument = publishedTarget(node.argument, scope) as typeof node.argument
+    }
+    return node
+  }
   traverse(ast, {
     AssignmentExpression: {
       exit(p) {
         if (changesExport(p.node.left, p.scope)) {
           if (types.isPattern(p.node.left)) {
-            throw new Error(`Destructuring assignment to an exported binding is unsupported in '${moduleId}'; use separate assignments`)
+            p.node.left = publishedTarget(p.node.left, p.scope) as typeof p.node.left
+          } else {
+            p.replaceWith(notify(p.node))
           }
-          p.replaceWith(notify(p.node)); p.skip()
+          p.skip()
         }
       },
     },
@@ -349,7 +421,16 @@ function transformModule(
       if (changesExport(node.left, p.scope)) {
         const target = types.isVariableDeclaration(node.left) ? node.left.declarations[0].id : node.left
         if (types.isPattern(target)) {
-          throw new Error(`Destructuring loop assignment to an exported binding is unsupported in '${moduleId}'; use separate assignments`)
+          if (types.isVariableDeclaration(node.left)) {
+            // Only function-scoped var declarations can refer to an exported
+            // binding here. Retain their hoisting before replacing the target.
+            const declarationScope = p.scope.getFunctionParent() ?? p.scope.getProgramParent()
+            for (const name of Object.keys(types.getBindingIdentifiers(target))) {
+              declarationScope.push({ id: types.identifier(name), kind: 'var' })
+            }
+          }
+          node.left = publishedTarget(target, p.scope) as typeof node.left
+          return
         }
         const body = types.isBlockStatement(node.body) ? node.body : types.blockStatement([node.body])
         body.body.unshift(types.expressionStatement(notify(types.unaryExpression('void', types.numericLiteral(0)))))
@@ -358,7 +439,33 @@ function transformModule(
     },
   })
 
+  const inModuleContext = (p: import('@babel/traverse').NodePath): boolean => {
+    let child = p
+    for (let parent = p.parentPath; parent; child = parent, parent = parent.parentPath) {
+      if (parent.isStaticBlock()) return false
+      if ((parent.isClassProperty() || parent.isClassPrivateProperty()) && child.key === 'value') return false
+      if (parent.isFunction() && !parent.isArrowFunctionExpression() && child.key !== 'key') return false
+    }
+    return true
+  }
   traverse(ast, {
+    ThisExpression(p) {
+      // Modules have an undefined top-level receiver, including arrows. A
+      // strict script alone is insufficient because its top-level this is the
+      // global object. Method keys are evaluated outside the method body;
+      // class field initializers/static blocks establish their own receiver.
+      if (inModuleContext(p)) p.replaceWith(types.unaryExpression('void', types.numericLiteral(0)))
+    },
+    ReferencedIdentifier(p) {
+      // Module factories must not leak their own arguments object into source
+      // that is lexically at module scope. Ordinary functions keep arguments.
+      if (p.node.name !== 'arguments' || p.scope.getBinding('arguments') || !inModuleContext(p)) return
+      const allowMissing = p.parentPath.isUnaryExpression({ operator: 'typeof' })
+      p.replaceWith(types.callExpression(
+        types.memberExpression(types.identifier(notifyIdentifier), types.identifier('getGlobal')),
+        [types.stringLiteral('arguments'), types.booleanLiteral(allowMissing)],
+      ))
+    },
     ImportDeclaration(p) {
       const specifier = p.node.source.value
       const namespace = namespaceFor(specifier)
@@ -420,7 +527,15 @@ function transformModule(
       ])]
     )))
   }
-  ast.program.body.unshift(...prelude, ...getters)
+  if (instantiateBeforeEvaluation) {
+    // A suspended generator retains each module's lexical environment. Getter
+    // installation and hoisted functions are available during instantiation;
+    // let/const/class declarations remain in their temporal dead zones until
+    // evaluation resumes after every dependency namespace has been linked.
+    ast.program.body.unshift(...prelude, ...getters, types.expressionStatement(types.yieldExpression(types.identifier(exportsIdentifier))))
+  } else {
+    ast.program.body.unshift(...prelude, ...getters)
+  }
   return { code: generator(ast).code, exportNames: [...exports.keys()] }
 }
 
@@ -732,9 +847,8 @@ export function bundle(entryPath: string, options: BundleOptions = {}): BundleRe
     ? collectCJSModules(absEntry, externals)
     : collectModules(absEntry, externals)
 
-  // Topological sort
-  const sortedIds = topoSort(modules)
   const entryId = path.relative(entryDir, absEntry)
+  const { sorted: sortedIds, cyclic } = topoSort(modules, entryId, !isCJS)
 
   const moduleExports = isCJS ? undefined : collectModuleExports(modules, sortedIds, externals, entryDir)
   const usedNames = new Set<string>()
@@ -754,7 +868,7 @@ export function bundle(entryPath: string, options: BundleOptions = {}): BundleRe
   const exportsIdentifier = isCJS ? '__exports' : uniqueName('__exports')
   const transform = (source: string, id: string, entry: string, external: Set<string>, dir: string) =>
     isCJS ? transformCJSModule(source, id, entry, external, dir)
-      : transformModule(source, id, entry, external, dir, moduleExports!.get(id)!, notifyIdentifier, registryIdentifier, exportsIdentifier)
+      : transformModule(source, id, entry, external, dir, moduleExports!.get(id)!, notifyIdentifier, registryIdentifier, exportsIdentifier, cyclic)
   const notifyMetadata = isCJS ? {} : { notifyIdentifier, exportsIdentifier }
 
   // VM property stores use Reflect.set. A namespace proxy enforces the ESM
@@ -771,18 +885,42 @@ export function bundle(entryPath: string, options: BundleOptions = {}): BundleRe
     }
   })`
 
+  if (!isCJS && cyclic) {
+    const instancesIdentifier = uniqueName('__moduleInstances')
+    const parts = [`"use strict";`, `var ${registryIdentifier} = ${namespaceInit};`, `var ${instancesIdentifier} = ${namespaceInit};`]
+    for (const id of sortedIds) {
+      const mod = modules.get(id)!
+      const { code } = transform(mod.source, id, entryId, externals, entryDir)
+      parts.push(`${instancesIdentifier}[${JSON.stringify(id)}] = (function*() {
+        var ${exportsIdentifier} = ${namespaceInit};
+        ${code}
+      })();`)
+    }
+    for (const id of sortedIds) {
+      // The yield returns the namespace before any module body is evaluated.
+      // Seal it only after getters have been installed by instantiation.
+      parts.push(`(function() {
+        var ${exportsIdentifier} = ${instancesIdentifier}[${JSON.stringify(id)}].next().value;
+        ${registryIdentifier}[${JSON.stringify(id)}] = ${namespaceResult};
+      })();`)
+    }
+    for (const id of sortedIds) parts.push(`${instancesIdentifier}[${JSON.stringify(id)}].next();`)
+    parts.push(`var ${exportsIdentifier} = ${registryIdentifier}[${JSON.stringify(entryId)}];`)
+    return { code: parts.join('\n'), entryExports: [...moduleExports!.get(entryId)!.keys()], ...notifyMetadata }
+  }
+
   // If only one module (no imports), just transform in-place
   if (sortedIds.length === 1) {
     const mod = modules.get(sortedIds[0])!
     const { code, exportNames } = transform(mod.source, mod.id, entryId, externals, entryDir)
     // Wrap with __exports for consistency
-    const wrapped = `var ${exportsIdentifier} = ${namespaceInit};\n${code}\n${exportsIdentifier} = ${namespaceResult};\n`
+    const wrapped = `${isCJS ? '' : '"use strict";\n'}var ${exportsIdentifier} = ${namespaceInit};\n${code}\n${exportsIdentifier} = ${namespaceResult};\n`
     return { code: wrapped, entryExports: exportNames, ...notifyMetadata }
   }
 
   // Build the bundled code
-  const parts: string[] = []
-  parts.push(`var ${registryIdentifier} = {};`)
+  const parts: string[] = isCJS ? [] : ['"use strict";']
+  parts.push(`var ${registryIdentifier} = ${namespaceInit};`)
 
   let entryExports: string[] = []
 
