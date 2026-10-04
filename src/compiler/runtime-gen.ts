@@ -1,7 +1,7 @@
 import { BINARY_OPS, OPCODES, UNARY_OPS } from '../runtime/opcodes'
 import { iteratorRuntimeSource } from './iterator-runtime'
-import { templateRuntimeSource } from './template-runtime'
 import { classRuntimeSource } from './class-runtime'
+import { templateRuntimeSource } from './template-runtime'
 
 export function generateRuntimeSource(): string {
   return `
@@ -30,8 +30,8 @@ function __scriptvmRun(metadata, globalObject) {
   var intrinsicArraySlice = Array.prototype.slice;
   function arraySlice(value, start) { return intrinsicReflect.apply(intrinsicArraySlice, value, [start]); }
   ${iteratorRuntimeSource}
-  ${templateRuntimeSource}
   ${classRuntimeSource}
+  ${templateRuntimeSource}
   function toTemplateString(value) { return \`\${value}\`; }
   function readGlobal(name) {
     switch (name) {
