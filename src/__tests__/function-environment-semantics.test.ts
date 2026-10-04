@@ -160,6 +160,53 @@ describe('block function declaration instantiation', () => {
       globalThis.__result = outer();
     `)
   })
+  it('instantiates derived-constructor functions before their declaration', () => {
+    expectEquivalent(`
+      class Base {}
+      class Derived extends Base {
+        constructor() {
+          const before = inner();
+          super();
+          this.value = [before, inner()];
+          function inner() { return 7; }
+        }
+      }
+      globalThis.__result = new Derived().value;
+    `)
+  })
+  it('keeps constructor lexical bindings shared with hoisted functions and nested closures', () => {
+    expectEquivalent(`
+      class Base {}
+      class Derived extends Base {
+        constructor() {
+          const result = [];
+          try { read(); } catch(error) { result.push(error.name); }
+          let value = 7;
+          const closure = nested();
+          super();
+          result.push(read(), closure()); value = 9; result.push(closure());
+          this.value = result;
+          function read() { return value; }
+          function nested() { return () => value; }
+        }
+      }
+      globalThis.__result = new Derived().value;
+    `)
+  })
+  it('preserves actual block function boundaries inside derived constructors', () => {
+    expectEquivalent(`
+      class Base {}
+      class Derived extends Base {
+        constructor() {
+          super(); const result = [read()];
+          { result.push(read()); function read() { return 2; } }
+          result.push(read()); this.value = result;
+          function read() { return 1; }
+        }
+      }
+      globalThis.__result = new Derived().value;
+    `)
+  })
   it('keeps generator and async block declarations lexical even in sloppy code', () => {
     expectEquivalent(`
       { function* g() { yield 1; } async function a() { return 2; } }
