@@ -1,6 +1,9 @@
+import { execFileSync } from 'node:child_process'
 import { runInNewContext } from 'node:vm'
 import { describe, expect, it } from 'vitest'
 import { compileSource } from '../core'
+import { compileProgram } from '../compiler/core-pipeline'
+import { parseSource } from '../compiler/frontend'
 import { expectEquivalent } from './differential'
 
 describe('class lexical evaluation and constructor inheritance', () => {
@@ -217,6 +220,55 @@ describe('class lexical evaluation and constructor inheritance', () => {
       globalThis.__result = [iterator.next(), iterator.return('cancelled'), iterator.next()];
     `)
   })
+  it.each([
+    ['unresolved write', "(missingClassKey = 1, 'key')", "typeof missingClassKey"],
+    ['readonly write', "(frozen.value = 2, 'key')", 'frozen.value'],
+    ['readonly update', "(frozen.value++, 'key')", 'frozen.value'],
+    ['nonconfigurable delete', "(delete frozen.value, 'key')", 'frozen.value'],
+  ])('keeps computed-key %s strict without changing the surrounding script', (_label, key, observation) => {
+    expectEquivalent(`
+      const frozen = Object.freeze({ value: 1 }); const log = [];
+      try { class C { [${key}]() {} } } catch (error) { log.push(error.name); }
+      frozen.value = 3; sloppyClassSentinel = 4;
+      globalThis.__result = [log, ${observation}, sloppyClassSentinel];
+    `)
+  })
+
+  it('evaluates heritage in strict mode and restores the enclosing mode after abrupt completion', () => {
+    expectEquivalent(`
+      const log = [];
+      try { class C extends (missingClassHeritage = 1, Object) {} } catch (error) { log.push(error.name); }
+      outerSloppy = 2; globalThis.__result = [log, typeof missingClassHeritage, outerSloppy];
+    `)
+  })
+
+  it('makes functions created in class computed keys strict while keeping this lexical', () => {
+    expectEquivalent(`
+      let read;
+      function factory() {
+        class C { [(read = function () { return this; }, this.key)]() {} }
+        return C;
+      }
+      const C = factory.call({ key: 'method' });
+      globalThis.__result = [read() === undefined, typeof C.prototype.method];
+    `)
+  })
+
+  it('supports await in a computed method key without introducing a function boundary', async () => {
+    const source = `
+      globalThis.__result = (async function factory() {
+        const C = class Named extends (await Promise.resolve(Array)) {
+          [await Promise.resolve('method')]() { return Named.name; }
+        };
+        return [new C().method(), Array.isArray(new C())];
+      })();
+    `
+    const native: { __result?: Promise<unknown> } = {}; const virtual: { __result?: Promise<unknown> } = {}
+    runInNewContext(source, native, { timeout: 1000 })
+    runInNewContext(compileSource(source).code, virtual, { timeout: 1000 })
+    expect(structuredClone(await virtual.__result)).toEqual(structuredClone(await native.__result))
+  })
+
   it('infers names for declarations, assignments and binding defaults', () => {
     expectEquivalent(`
       const Assigned = class {}; let Later; Later = class {};
@@ -263,6 +315,23 @@ describe('class lexical evaluation and constructor inheritance', () => {
       const instance = new Value(); Value = 7;
       globalThis.__result = instance.read();
     `)
+  })
+
+  it.each(['iife', 'cjs', 'esm'] as const)('preserves class lexical evaluation in actual %s output', format => {
+    const source = `
+      function factory() { return class { [this.key + (new.target ? ':new' : ':call')]() { return 7; } }; }
+      factory.prototype.key = 'method'; const C = new factory();
+      class A {} class B { constructor() { this.target = new.target.name; } }
+      class D extends A {} Object.setPrototypeOf(D, B);
+      let failure; try { class Strict { [(missingOutputKey = 1, 'key')]() {} } } catch (error) { failure = error.name; }
+      globalThis.__result = [new C()['method:new'](), new D().target, failure, typeof missingOutputKey];
+    `
+    const code = compileProgram(parseSource(source, 'script'), { format }).code
+    const output = execFileSync(process.execPath, [
+      '--input-type=' + (format === 'esm' ? 'module' : 'commonjs'), '-e',
+      code + '\nconsole.log(JSON.stringify(globalThis.__result));',
+    ], { encoding: 'utf8', timeout: 5000 })
+    expect(JSON.parse(output)).toEqual([7, 'D', 'ReferenceError', 'undefined'])
   })
 
   it('preserves class name descriptors and explicitly named class values', () => {
