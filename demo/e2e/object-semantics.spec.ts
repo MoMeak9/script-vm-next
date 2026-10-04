@@ -20,6 +20,11 @@ test('the production worker preserves enhanced object literal semantics', async 
     Object.setPrototypeOf(object, { read() { return this.value + 10; } });
     console.log('dynamic super', detached.read());
     try { new object.read(); } catch (error) { console.log('method constructor', error.name); }
+    const nested = { __proto__: { Parent: Array, key: 'method' }, make() {
+      return class extends super.Parent { [super.key]() { return 42; } };
+    } };
+    const C = nested.make();
+    console.log('nested class super', new C().method(), Array.isArray(new C()));
   `);
   await page.locator('#compile-button').click();
   await expect(page.locator('#run-button')).toBeEnabled();
@@ -30,4 +35,5 @@ test('the production worker preserves enhanced object literal semantics', async 
   await expect(logs).toContainText('object compatibility 7 9 own property read');
   await expect(logs).toContainText('dynamic super 19');
   await expect(logs).toContainText('method constructor TypeError');
+  await expect(logs).toContainText('nested class super 42 true');
 });

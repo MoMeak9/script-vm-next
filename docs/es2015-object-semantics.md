@@ -16,7 +16,8 @@ The object-literal path supports:
   lengths, and anonymous function/arrow names in data properties.
 - Method `super` reads, calls, tagged templates, assignment, compound assignment,
   updates and deletion errors, including use from nested arrows and parameter
-  defaults. Each method retains its original home object when detached or copied;
+  defaults, and lexical `super` in nested class heritage and computed keys.
+  Each method retains its original home object when detached or copied;
   changing that object's prototype affects subsequent calls.
 - The existing object-spread extension with own enumerable string/symbol copying,
   source getters and proxy descriptor ordering, and no inherited target setters.

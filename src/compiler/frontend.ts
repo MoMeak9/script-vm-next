@@ -994,7 +994,22 @@ function transformObjectSuper(body: t.BlockStatement, home: t.Identifier, strict
     Function(path) {
       if (path.node !== root && !path.isArrowFunctionExpression()) path.skip()
     },
-    Class(path) { path.skip() },
+    Class(path) {
+      // A nested class's heritage and computed keys retain the surrounding
+      // method's super binding. Its method bodies establish different homes.
+      const transformKey = (value: t.Expression): t.Expression => {
+        const statement = t.expressionStatement(value)
+        transformObjectSuper(t.blockStatement([statement]), home, true)
+        return statement.expression
+      }
+      if (path.node.superClass) path.node.superClass = transformKey(path.node.superClass)
+      for (const member of path.node.body.body) {
+        if ('computed' in member && member.computed && 'key' in member) {
+          member.key = transformKey(member.key as t.Expression)
+        }
+      }
+      path.skip()
+    },
     UnaryExpression(path) {
       const argument = path.node.argument
       if (path.node.operator !== 'delete' || !t.isMemberExpression(argument) || !t.isSuper(argument.object)) return

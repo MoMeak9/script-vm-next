@@ -163,6 +163,20 @@ describe('ES2015 enhanced object literals', () => {
       } };
       globalThis.__result = object.method();
     `],
+    ['retains object super in nested class heritage and computed keys', `
+      const object = { __proto__: { Parent: Array, key: 'method' }, make() {
+        return class extends super.Parent { [super.key]() { return 7; } };
+      } };
+      const C = object.make();
+      globalThis.__result = [Array.isArray(new C()), new C().method()];
+    `],
+    ['separates a nested class method home from the enclosing object method home', `
+      class Parent { run() { return 'class home'; } }
+      const object = { __proto__: { Parent, key: 'method', run() { return 'object home'; } }, make() {
+        return class extends super.Parent { [super.key]() { return super.run(); } };
+      } };
+      const C = object.make(); globalThis.__result = new C().method();
+    `],
     ['evaluates computed super calls and spread arguments once in order', `
       const events = [];
       const base = { get method() { events.push('get'); return function(a, b) { events.push(this.own, a, b); return a + b; }; } };
