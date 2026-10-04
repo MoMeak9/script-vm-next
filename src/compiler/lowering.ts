@@ -5,14 +5,15 @@ interface LoopLabels {
   breakLabel: string
   scopeDepth: number
   continueLabel: string
-  label?: string
+  labels?: string[]
 }
 
 interface BreakableLabels {
+  labelOnly?: boolean
   breakLabel: string
   scopeDepth: number
   continueLabel?: string
-  label?: string
+  labels?: string[]
 }
 
 interface ScopeBinding {
@@ -152,7 +153,6 @@ class FunctionBuilder {
 
 class ModuleLowerer {
   functions: FunctionBuilder[] = []
-  pendingLabel?: string
 
   constructor(private readonly exportsIdentifier = '__exports') {}
 
@@ -359,11 +359,15 @@ class ModuleLowerer {
       }
       const reg = builder.allocReg()
       builder.emit({ op: 'make_function', dst: reg, functionId })
-      builder.emit({ op: scope === builder.rootScope ? 'store_slot' : 'init_slot', depth: binding.depth, slot: binding.slot, src: reg })
+      if (scope === builder.rootScope) {
+        builder.emit({ op: 'store_slot', strict: builder.strict, depth: binding.depth, slot: binding.slot, src: reg })
+      } else {
+        builder.emit({ op: 'init_slot', depth: binding.depth, slot: binding.slot, src: reg })
+      }
     }
   }
 
-  private compileStatement(statement: t.Statement, builder: FunctionBuilder, scope: ScopeFrame) {
+  private compileStatement(statement: t.Statement, builder: FunctionBuilder, scope: ScopeFrame, statementLabels: string[] = []) {
     if (t.isFunctionDeclaration(statement)) {
       if (builder.annexBFunctions.has(statement) && statement.id) {
         const lexical = builder.resolve(scope, statement.id.name)
@@ -411,7 +415,7 @@ class ModuleLowerer {
         if (declaration.init) {
           const init = this.compileExpression(declaration.init, builder, scope)
           if (statement.kind === 'var') {
-            builder.emit({ op: 'store_slot', depth: binding.depth, slot: binding.slot, src: init })
+            builder.emit({ op: 'store_slot', strict: builder.strict, depth: binding.depth, slot: binding.slot, src: init })
           } else {
             builder.emit({ op: 'init_slot', depth: binding.depth, slot: binding.slot, src: init })
           }
@@ -456,9 +460,8 @@ class ModuleLowerer {
       const test = this.compileExpression(statement.test, builder, scope)
       builder.emit({ op: 'jump_if_false', condition: test, target: endLabel })
       builder.emit({ op: 'label', name: bodyLabel })
-      const whileLabel = this.pendingLabel; this.pendingLabel = undefined
-      builder.loopStack.push({ breakLabel: endLabel, continueLabel: testLabel, label: whileLabel, scopeDepth: scope.runtimeDepth - builder.rootScope.runtimeDepth })
-      builder.breakStack.push({ breakLabel: endLabel, continueLabel: testLabel, label: whileLabel, scopeDepth: scope.runtimeDepth - builder.rootScope.runtimeDepth })
+      builder.loopStack.push({ breakLabel: endLabel, continueLabel: testLabel, labels: statementLabels, scopeDepth: scope.runtimeDepth - builder.rootScope.runtimeDepth })
+      builder.breakStack.push({ breakLabel: endLabel, continueLabel: testLabel, labels: statementLabels, scopeDepth: scope.runtimeDepth - builder.rootScope.runtimeDepth })
       this.compileStatement(statement.body, builder, scope)
       builder.loopStack.pop()
       builder.breakStack.pop()
@@ -473,9 +476,8 @@ class ModuleLowerer {
       const endLabel = builder.label('do_end')
 
       builder.emit({ op: 'label', name: bodyLabel })
-      const doLabel = this.pendingLabel; this.pendingLabel = undefined
-      builder.loopStack.push({ breakLabel: endLabel, continueLabel: testLabel, label: doLabel, scopeDepth: scope.runtimeDepth - builder.rootScope.runtimeDepth })
-      builder.breakStack.push({ breakLabel: endLabel, continueLabel: testLabel, label: doLabel, scopeDepth: scope.runtimeDepth - builder.rootScope.runtimeDepth })
+      builder.loopStack.push({ breakLabel: endLabel, continueLabel: testLabel, labels: statementLabels, scopeDepth: scope.runtimeDepth - builder.rootScope.runtimeDepth })
+      builder.breakStack.push({ breakLabel: endLabel, continueLabel: testLabel, labels: statementLabels, scopeDepth: scope.runtimeDepth - builder.rootScope.runtimeDepth })
       this.compileStatement(statement.body, builder, scope)
       builder.loopStack.pop()
       builder.breakStack.pop()
@@ -517,9 +519,8 @@ class ModuleLowerer {
         const test = this.compileExpression(statement.test, builder, loopScope)
         builder.emit({ op: 'jump_if_false', condition: test, target: endLabel })
       }
-      const forLabel = this.pendingLabel; this.pendingLabel = undefined
-      builder.loopStack.push({ breakLabel: endLabel, continueLabel: updateLabel, label: forLabel, scopeDepth: loopScope.runtimeDepth - builder.rootScope.runtimeDepth })
-      builder.breakStack.push({ breakLabel: endLabel, continueLabel: updateLabel, label: forLabel, scopeDepth: loopScope.runtimeDepth - builder.rootScope.runtimeDepth })
+      builder.loopStack.push({ breakLabel: endLabel, continueLabel: updateLabel, labels: statementLabels, scopeDepth: loopScope.runtimeDepth - builder.rootScope.runtimeDepth })
+      builder.breakStack.push({ breakLabel: endLabel, continueLabel: updateLabel, labels: statementLabels, scopeDepth: loopScope.runtimeDepth - builder.rootScope.runtimeDepth })
       this.compileStatement(statement.body, builder, loopScope)
       builder.loopStack.pop()
       builder.breakStack.pop()
@@ -542,12 +543,12 @@ class ModuleLowerer {
       if (statement.label) {
         let target: BreakableLabels | undefined
         for (let i = builder.breakStack.length - 1; i >= 0; i--) {
-          if (builder.breakStack[i].label === statement.label.name) { target = builder.breakStack[i]; break }
+          if (builder.breakStack[i].labels?.includes(statement.label.name)) { target = builder.breakStack[i]; break }
         }
         if (!target) throw new Error(`Unknown label: ${statement.label.name}`)
         builder.emit({ op: 'abrupt_jump', target: target.breakLabel, scopeDepth: target.scopeDepth })
       } else {
-        const breakable = builder.breakStack[builder.breakStack.length - 1]
+        const breakable = [...builder.breakStack].reverse().find((target) => !target.labelOnly)
         if (!breakable) throw new Error('break statement is only supported inside loops')
         builder.emit({ op: 'abrupt_jump', target: breakable.breakLabel, scopeDepth: breakable.scopeDepth })
       }
@@ -558,7 +559,7 @@ class ModuleLowerer {
       if (statement.label) {
         let target: LoopLabels | undefined
         for (let i = builder.loopStack.length - 1; i >= 0; i--) {
-          if (builder.loopStack[i].label === statement.label.name) { target = builder.loopStack[i]; break }
+          if (builder.loopStack[i].labels?.includes(statement.label.name)) { target = builder.loopStack[i]; break }
         }
         if (!target) throw new Error(`Unknown label: ${statement.label.name}`)
         builder.emit({ op: 'abrupt_jump', target: target.continueLabel, scopeDepth: target.scopeDepth })
@@ -674,8 +675,7 @@ class ModuleLowerer {
       builder.emit({ op: 'jump', target: defaultLabel })
 
       // Emit case bodies
-      const switchLabel = this.pendingLabel; this.pendingLabel = undefined
-      builder.breakStack.push({ breakLabel: cleanupLabel, label: switchLabel, scopeDepth: (hasLexicalScope ? switchScope : scope).runtimeDepth - builder.rootScope.runtimeDepth })
+      builder.breakStack.push({ breakLabel: cleanupLabel, labels: statementLabels, scopeDepth: (hasLexicalScope ? switchScope : scope).runtimeDepth - builder.rootScope.runtimeDepth })
       for (let i = 0; i < statement.cases.length; i++) {
         builder.emit({ op: 'label', name: caseLabels[i] })
         for (const consequent of statement.cases[i].consequent) {
@@ -693,17 +693,20 @@ class ModuleLowerer {
     }
 
     if (t.isLabeledStatement(statement)) {
-      const labelName = statement.label.name
-      if (t.isBlockStatement(statement.body)) {
+      const labels: string[] = []
+      let body: t.Statement = statement
+      while (t.isLabeledStatement(body)) {
+        labels.push(body.label.name)
+        body = body.body
+      }
+      if (t.isLoop(body) || t.isSwitchStatement(body)) {
+        this.compileStatement(body, builder, scope, labels)
+      } else {
         const endLabel = builder.label('labeled_end')
-        builder.breakStack.push({ breakLabel: endLabel, label: labelName, scopeDepth: scope.runtimeDepth - builder.rootScope.runtimeDepth })
-        this.compileStatement(statement.body, builder, scope)
+        builder.breakStack.push({ labelOnly: true, breakLabel: endLabel, labels, scopeDepth: scope.runtimeDepth - builder.rootScope.runtimeDepth })
+        this.compileStatement(body, builder, scope)
         builder.breakStack.pop()
         builder.emit({ op: 'label', name: endLabel })
-      } else {
-        this.pendingLabel = labelName
-        this.compileStatement(statement.body, builder, scope)
-        this.pendingLabel = undefined
       }
       return
     }
@@ -863,7 +866,7 @@ class ModuleLowerer {
           const length = builder.allocReg()
           builder.emit({ op: 'get_prop', dst: length, object: dst, property })
           const nextLength = this.binary('+', length, this.loadLiteral(1, builder), builder)
-          builder.emit({ op: 'set_prop', dst: builder.allocReg(), object: dst, property, value: nextLength })
+          builder.emit({ op: 'set_prop', strict: builder.strict, dst: builder.allocReg(), object: dst, property, value: nextLength })
           continue
         }
         if (t.isSpreadElement(element)) {
@@ -916,7 +919,7 @@ class ModuleLowerer {
             ? this.compileExpression(expression.argument.property as t.Expression, builder, scope)
             : this.loadLiteral((expression.argument.property as t.Identifier).name, builder)
           const dst = builder.allocReg()
-          builder.emit({ op: 'delete_prop', dst, object, property })
+          builder.emit({ op: 'delete_prop', strict: builder.strict, dst, object, property })
           return dst
         }
         // delete on non-member (identifier, literal, etc.) — evaluate for side effects, return true
@@ -1065,9 +1068,9 @@ class ModuleLowerer {
       const binding = builder.resolve(scope, left.name)
       const value = this.compileExpression(right, builder, scope)
       if (binding.kind === 'slot') {
-        builder.emit({ op: 'store_slot', depth: binding.depth, slot: binding.slot, src: value })
+        builder.emit({ op: 'store_slot', strict: builder.strict, depth: binding.depth, slot: binding.slot, src: value })
       } else {
-        builder.emit({ op: 'store_global', name: binding.name, src: value })
+        builder.emit({ op: 'store_global', strict: builder.strict, name: binding.name, src: value })
       }
       return value
     }
@@ -1080,7 +1083,7 @@ class ModuleLowerer {
       // property-key coercion) until after the RHS has been evaluated.
       const value = this.compileExpression(right, builder, scope)
       const dst = builder.allocReg()
-      builder.emit({ op: 'set_prop', dst, object, property, value })
+      builder.emit({ op: 'set_prop', strict: builder.strict, dst, object, property, value })
       return dst
     }
     throw new Error('Unsupported assignment target')
@@ -1118,9 +1121,9 @@ class ModuleLowerer {
         const value = this.compileExpression(expression.right, builder, scope)
         const binding = builder.resolve(scope, expression.left.name)
         if (binding.kind === 'slot') {
-          builder.emit({ op: 'store_slot', depth: binding.depth, slot: binding.slot, src: value })
+          builder.emit({ op: 'store_slot', strict: builder.strict, depth: binding.depth, slot: binding.slot, src: value })
         } else {
-          builder.emit({ op: 'store_global', name: binding.name, src: value })
+          builder.emit({ op: 'store_global', strict: builder.strict, name: binding.name, src: value })
         }
         builder.emit({ op: 'move', dst, src: value })
         builder.emit({ op: 'label', name: endLabel })
@@ -1131,9 +1134,9 @@ class ModuleLowerer {
       const result = this.binary(baseOp, currentValue, value, builder)
       const binding = builder.resolve(scope, expression.left.name)
       if (binding.kind === 'slot') {
-        builder.emit({ op: 'store_slot', depth: binding.depth, slot: binding.slot, src: result })
+        builder.emit({ op: 'store_slot', strict: builder.strict, depth: binding.depth, slot: binding.slot, src: result })
       } else {
-        builder.emit({ op: 'store_global', name: binding.name, src: result })
+        builder.emit({ op: 'store_global', strict: builder.strict, name: binding.name, src: result })
       }
       return result
     }
@@ -1164,7 +1167,7 @@ class ModuleLowerer {
         }
 
         const value = this.compileExpression(expression.right, builder, scope)
-        builder.emit({ op: 'set_prop', dst, object, property, value })
+        builder.emit({ op: 'set_prop', strict: builder.strict, dst, object, property, value })
         builder.emit({ op: 'label', name: endLabel })
         return dst
       }
@@ -1172,7 +1175,7 @@ class ModuleLowerer {
       const value = this.compileExpression(expression.right, builder, scope)
       const result = this.binary(baseOp, currentValue, value, builder)
       const dst = builder.allocReg()
-      builder.emit({ op: 'set_prop', dst, object, property, value: result })
+      builder.emit({ op: 'set_prop', strict: builder.strict, dst, object, property, value: result })
       return dst
     }
 
@@ -1186,9 +1189,9 @@ class ModuleLowerer {
       const updated = this.unary(expression.operator, current, builder)
       const binding = builder.resolve(scope, expression.argument.name)
       if (binding.kind === 'slot') {
-        builder.emit({ op: 'store_slot', depth: binding.depth, slot: binding.slot, src: updated })
+        builder.emit({ op: 'store_slot', strict: builder.strict, depth: binding.depth, slot: binding.slot, src: updated })
       } else {
-        builder.emit({ op: 'store_global', name: binding.name, src: updated })
+        builder.emit({ op: 'store_global', strict: builder.strict, name: binding.name, src: updated })
       }
       return expression.prefix ? updated : current
     }
@@ -1203,7 +1206,7 @@ class ModuleLowerer {
       const current = this.unary('to_numeric', value, builder)
       const updated = this.unary(expression.operator, current, builder)
       const setDst = builder.allocReg()
-      builder.emit({ op: 'set_prop', dst: setDst, object, property, value: updated })
+      builder.emit({ op: 'set_prop', strict: builder.strict, dst: setDst, object, property, value: updated })
       return expression.prefix ? updated : current
     }
 

@@ -14,15 +14,15 @@ export type IRInstruction =
   | { op: 'move'; dst: number; src: number }
   | { op: 'load_slot'; dst: number; depth: number; slot: number }
   | { op: 'init_slot'; depth: number; slot: number; src: number }
-  | { op: 'store_slot'; depth: number; slot: number; src: number }
+  | { op: 'store_slot'; depth: number; slot: number; src: number; strict?: boolean }
   | { op: 'load_global'; dst: number; name: string }
   | { op: 'typeof_global'; dst: number; name: string }
   | { op: 'parameter_end' }
-  | { op: 'store_global'; name: string; src: number }
+  | { op: 'store_global'; name: string; src: number; strict?: boolean }
   | { op: 'load_this'; dst: number }
   | { op: 'load_arguments'; dst: number }
   | { op: 'get_prop'; dst: number; object: number; property: number }
-  | { op: 'set_prop'; dst: number; object: number; property: number; value: number }
+  | { op: 'set_prop'; dst: number; object: number; property: number; value: number; strict?: boolean }
   | { op: 'binary'; dst: number; left: number; right: number; operator: string }
   | { op: 'unary'; dst: number; value: number; operator: string }
   | { op: 'jump'; target: string }
@@ -41,7 +41,7 @@ export type IRInstruction =
   | { op: 'array_push'; array: number; value: number }
   | { op: 'object_new'; dst: number }
   | { op: 'object_set'; object: number; key: number; value: number }
-  | { op: 'delete_prop'; dst: number; object: number; property: number }
+  | { op: 'delete_prop'; dst: number; object: number; property: number; strict?: boolean }
   | { op: 'load_new_target'; dst: number }
 
 export interface FunctionIR {

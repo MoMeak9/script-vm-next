@@ -1456,10 +1456,14 @@ export function normalizeAst(file: t.File): t.File {
           binding,
           path.node.body,
         ]))
-        const labeled = path.parentPath.isLabeledStatement()
-        const loopStatement = labeled
-          ? t.labeledStatement(t.cloneNode((path.parentPath.node as t.LabeledStatement).label), loop)
-          : loop
+        // Every contiguous label denotes this iteration statement, including
+        // continue targets. Move the entire label set inside iterator cleanup.
+        let replacementPath: typeof path | typeof path.parentPath = path
+        let loopStatement: t.Statement = loop
+        while (replacementPath.parentPath?.isLabeledStatement()) {
+          replacementPath = replacementPath.parentPath
+          loopStatement = t.labeledStatement(t.cloneNode((replacementPath.node as t.LabeledStatement).label), loopStatement)
+        }
         const replacement = [
           t.variableDeclaration('var', [t.variableDeclarator(iterator, iteratorIntrinsic('IteratorStart', [path.node.right]))]),
           t.tryStatement(t.blockStatement([loopStatement]),
@@ -1470,8 +1474,7 @@ export function normalizeAst(file: t.File): t.File {
             t.blockStatement([t.expressionStatement(iteratorIntrinsic('IteratorClose', [iterator]))])
           ),
         ]
-        if (labeled) path.parentPath.replaceWithMultiple(replacement)
-        else path.replaceWithMultiple(replacement)
+        replacementPath.replaceWithMultiple(replacement)
         return
       }
       const iterTmp = t.identifier(nextId())
