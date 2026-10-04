@@ -1014,7 +1014,16 @@ function buildConcatArgs(elements: (t.Expression | t.SpreadElement)[]): t.Expres
 }
 
 function getEnclosingBody(path: any): t.Statement[] {
-  const functionPath = path.getFunctionParent()
+  let functionPath
+  for (let child = path; child.parentPath; child = child.parentPath) {
+    const parent = child.parentPath
+    if (!parent.isFunction()) continue
+    // A method's computed key is evaluated outside its own function body.
+    // Temporaries introduced there belong to the surrounding execution frame.
+    if ((parent.isClassMethod() || parent.isObjectMethod()) && parent.node.computed && child.key === 'key') continue
+    functionPath = parent
+    break
+  }
   if (functionPath && 'body' in functionPath.node) {
     if (t.isBlockStatement((functionPath.node as any).body)) {
       return ((functionPath.node as any).body as t.BlockStatement).body
