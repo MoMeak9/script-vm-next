@@ -23,7 +23,8 @@
     "test:e2e": "playwright test",
     "prepack": "pnpm build",
     "release:check": "node scripts/check-release.mjs",
-    "prepublishOnly": "pnpm release:check"
+    "prepublishOnly": "pnpm release:check",
+    "test:test262": "node --test scripts/test262.test.mjs && node scripts/test262/run.mjs"
   },
   "files": [
     "dist",

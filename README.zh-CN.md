@@ -132,7 +132,7 @@ pnpm demo:preview
 
 源代码 → 可选的 Node 模块打包 → Babel 解析与规范化 → 寄存器式 IR → 字节码 → 运行时代码生成 → 输出包装。
 
-从[文档导航](docs/README.md)开始阅读，索引会标明每份文档的语言。[架构概览](docs/01-architecture-overview.md)与[系列教程](docs/00-tutorial-guide.md)目前为简体中文，[兼容性矩阵](docs/compatibility.md)目前为英文。后续兼容性工作包括增加原生 JavaScript 与 VM 的差分回归测试、修复已记录的语义缺口、接入选定的 Test262 用例，以及验证实际应用代码。稳定版需要足以支撑其语言支持范围的验证证据，打包与演示页本身不能证明语言语义完整。
+从[文档导航](docs/README.md)开始阅读，索引会标明每份文档的语言。[架构概览](docs/01-architecture-overview.md)与[系列教程](docs/00-tutorial-guide.md)目前为简体中文，[兼容性矩阵](docs/compatibility.md)目前为英文。目前已接入[固定版本的 Test262 基线](docs/test262.md)，在 Node.js 20、22、24 上执行 219 个选定的 ES2015 测试文件（428 个执行变体）。后续工作包括扩大已记录的测试范围、增加原生 JavaScript 与 VM 的差分回归测试、修复已知语义缺口，以及验证实际应用代码。稳定版需要足以支撑其语言支持范围的验证证据，打包与演示页本身不能证明语言语义完整。
 
 ## 许可证
 

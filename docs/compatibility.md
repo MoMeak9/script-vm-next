@@ -89,7 +89,7 @@ Before claiming a broader compatibility level:
 
 1. Add native-versus-VM regression cases for each known mismatch, including results, exceptions, and observable evaluation order.
 2. Resolve the documented common-language gaps or reject unsupported forms with actionable diagnostics. Today, not all known gaps are detected at compile time.
-3. Add selected Test262 suites with their supported feature scope recorded. Test262 has not yet been integrated.
+3. Expand the [pinned Test262 baseline](test262.md), which currently runs 219 selected ES2015 files / 428 execution variants on Node.js 20, 22, and 24. The documented scope excludes known pending semantic gaps and is not the complete upstream suite. Every selected case must pass without skips.
 4. Validate representative application code and the installed npm tarball in separate consumers.
 
 The reliability work fixes specific regressions and records these limits. Packaging, the source API, and the playground make the compiler easier to consume and inspect; they do not complete every ES2015 feature or establish general production readiness. Registry publication and Pages availability must be verified through their separate release/deployment results. See the [release guide](releasing.md) and [playground guide](playground.md).

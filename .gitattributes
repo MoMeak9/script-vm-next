@@ -1,0 +1,2 @@
+# Preserve upstream Test262 bytes, including intentional line terminators and whitespace.
+vendor/test262/** -text -whitespace linguist-vendored

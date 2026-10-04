@@ -36,6 +36,16 @@ jobs:
         run: pnpm install --frozen-lockfile --ignore-scripts --registry=https://registry.npmjs.org
       - name: Build and test
         run: pnpm test
+      - name: Run pinned ES2015 Test262 baseline
+        run: pnpm test:test262
+      - name: Save Test262 report
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: test262-node-${{ matrix.node }}
+          path: artifacts/test262/report.json
+          if-no-files-found: ignore
+          retention-days: 7
 
   package-and-browser:
     name: Node.js 24 / package and browser
@@ -65,6 +75,16 @@ jobs:
           pnpm typecheck
       - name: Test compiler
         run: pnpm test:unit
+      - name: Run pinned ES2015 Test262 baseline
+        run: pnpm test:test262
+      - name: Save Test262 report
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: test262-node-24
+          path: artifacts/test262/report.json
+          if-no-files-found: ignore
+          retention-days: 7
       - name: Verify packed npm package in independent consumers
         run: pnpm test:package
       - name: Install Chromium

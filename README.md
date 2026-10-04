@@ -132,7 +132,7 @@ The [CI workflow](.github/workflows/ci.yml) tests the compiler on Node.js 20, 22
 
 Source → optional Node module bundling → Babel parsing and normalization → register-based IR → bytecode → runtime generation → output wrapping.
 
-Start with the [documentation index](docs/README.md), which labels each document's language. The [architecture guide](docs/01-architecture-overview.md) and [tutorials](docs/00-tutorial-guide.md) are currently in Simplified Chinese; the [compatibility matrix](docs/compatibility.md) is in English. Further compatibility work should add native-versus-VM regressions, resolve documented semantic gaps, integrate selected Test262 cases, and validate real application inputs. A stable release requires evidence for its declared language scope; packaging and a playground alone do not establish language conformance.
+Start with the [documentation index](docs/README.md), which labels each document's language. The [architecture guide](docs/01-architecture-overview.md) and [tutorials](docs/00-tutorial-guide.md) are currently in Simplified Chinese; the [compatibility matrix](docs/compatibility.md) is in English. A [pinned Test262 baseline](docs/test262.md) runs 219 selected ES2015 test files (428 execution variants) on Node.js 20, 22, and 24. Further compatibility work should expand that documented scope, add native-versus-VM regressions, resolve known semantic gaps, and validate real application inputs. A stable release requires evidence for its declared language scope; packaging and a playground alone do not establish language conformance.
 
 ## License
 
