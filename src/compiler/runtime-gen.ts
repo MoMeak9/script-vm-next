@@ -23,6 +23,8 @@ function __scriptvmRun(metadata, globalObject) {
   var intrinsicTypeError = TypeError;
   var intrinsicReferenceError = ReferenceError;
   var intrinsicReflect = Reflect;
+  var intrinsicReflectSet = Reflect.set;
+  var intrinsicReflectDelete = Reflect.deleteProperty;
   var intrinsicProxy = Proxy;
   var intrinsicArraySlice = Array.prototype.slice;
   function arraySlice(value, start) { return intrinsicReflect.apply(intrinsicArraySlice, value, [start]); }
@@ -61,6 +63,22 @@ function __scriptvmRun(metadata, globalObject) {
   function writeGlobal(name, value, strict) {
     if (strict && !(name in globalObject)) throw new intrinsicReferenceError(name + ' is not defined');
     if (!intrinsicReflect.set(globalObject, name, value) && strict) throw new intrinsicTypeError('Cannot assign global ' + name);
+  }
+
+  function setProperty(object, key, value, strict) {
+    // Keep the original receiver (including primitives) when invoking inherited
+    // setters. Reflect returns false for writes that sloppy code must ignore.
+    if (object == null) throw new intrinsicTypeError('Cannot set property of null or undefined');
+    var success = intrinsicReflectSet(intrinsicObject(object), key, value, object);
+    if (!success && strict) throw new intrinsicTypeError('Cannot assign to property');
+    return value;
+  }
+
+  function deleteProperty(object, key, strict) {
+    if (object == null) throw new intrinsicTypeError('Cannot delete property of null or undefined');
+    var success = intrinsicReflectDelete(intrinsicObject(object), key);
+    if (!success && strict) throw new intrinsicTypeError('Cannot delete property');
+    return success;
   }
 
   function binary(op, left, right) {
@@ -146,7 +164,7 @@ function __scriptvmRun(metadata, globalObject) {
     return targetEnv.values[slot]
   }
 
-  function writeSlot(targetEnv, slot, value, isInit) {
+  function writeSlot(targetEnv, slot, value, isInit, strict) {
     var kind = targetEnv.slotKinds[slot]
     if (isInit) {
       targetEnv.values[slot] = value
@@ -331,7 +349,7 @@ function __scriptvmRun(metadata, globalObject) {
               var storeDepth = code[pc++]
               var storeSlot = code[pc++]
               var storeSrc = code[pc++]
-              writeSlot(resolveEnv(env, storeDepth), storeSlot, regs[storeSrc], false)
+              writeSlot(resolveEnv(env, storeDepth), storeSlot, regs[storeSrc], false, code[pc++])
               break
             }
             case OPCODES.LOAD_GLOBAL:
@@ -341,7 +359,7 @@ function __scriptvmRun(metadata, globalObject) {
               regs[code[pc++]] = typeof globalObject[metadata.constantPool[code[pc++]]]
               break
             case OPCODES.STORE_GLOBAL:
-              writeGlobal(metadata.constantPool[code[pc++]], regs[code[pc++]], meta.strict)
+              writeGlobal(metadata.constantPool[code[pc++]], regs[code[pc++]], code[pc++])
               break
             case OPCODES.LOAD_THIS:
               regs[code[pc++]] = env.thisValue
@@ -361,15 +379,14 @@ function __scriptvmRun(metadata, globalObject) {
               var setObj = regs[code[pc++]]
               var setProp = regs[code[pc++]]
               var setValue = regs[code[pc++]]
-              setObj[setProp] = setValue
-              regs[setDst] = setValue
+              regs[setDst] = setProperty(setObj, setProp, setValue, code[pc++])
               break
             }
             case OPCODES.DELETE_PROP: {
               var delDst = code[pc++]
               var delObj = regs[code[pc++]]
               var delProp = regs[code[pc++]]
-              regs[delDst] = delete delObj[delProp]
+              regs[delDst] = deleteProperty(delObj, delProp, code[pc++])
               break
             }
             case OPCODES.LOAD_NEW_TARGET:
@@ -590,7 +607,7 @@ function __scriptvmRun(metadata, globalObject) {
               var storeDepth = code[pc++]
               var storeSlot = code[pc++]
               var storeSrc = code[pc++]
-              writeSlot(resolveEnv(env, storeDepth), storeSlot, regs[storeSrc], false)
+              writeSlot(resolveEnv(env, storeDepth), storeSlot, regs[storeSrc], false, code[pc++])
               break
             }
             case OPCODES.LOAD_GLOBAL:
@@ -600,7 +617,7 @@ function __scriptvmRun(metadata, globalObject) {
               regs[code[pc++]] = typeof globalObject[metadata.constantPool[code[pc++]]]
               break
             case OPCODES.STORE_GLOBAL:
-              writeGlobal(metadata.constantPool[code[pc++]], regs[code[pc++]], meta.strict)
+              writeGlobal(metadata.constantPool[code[pc++]], regs[code[pc++]], code[pc++])
               break
             case OPCODES.LOAD_THIS:
               regs[code[pc++]] = env.thisValue
@@ -620,15 +637,14 @@ function __scriptvmRun(metadata, globalObject) {
               var setObj = regs[code[pc++]]
               var setProp = regs[code[pc++]]
               var setValue = regs[code[pc++]]
-              setObj[setProp] = setValue
-              regs[setDst] = setValue
+              regs[setDst] = setProperty(setObj, setProp, setValue, code[pc++])
               break
             }
             case OPCODES.DELETE_PROP: {
               var delDst = code[pc++]
               var delObj = regs[code[pc++]]
               var delProp = regs[code[pc++]]
-              regs[delDst] = delete delObj[delProp]
+              regs[delDst] = deleteProperty(delObj, delProp, code[pc++])
               break
             }
             case OPCODES.LOAD_NEW_TARGET:
@@ -851,7 +867,7 @@ function __scriptvmRun(metadata, globalObject) {
               var storeDepth = code[pc++]
               var storeSlot = code[pc++]
               var storeSrc = code[pc++]
-              writeSlot(resolveEnv(env, storeDepth), storeSlot, regs[storeSrc], false)
+              writeSlot(resolveEnv(env, storeDepth), storeSlot, regs[storeSrc], false, code[pc++])
               break
             }
             case OPCODES.LOAD_GLOBAL:
@@ -861,7 +877,7 @@ function __scriptvmRun(metadata, globalObject) {
               regs[code[pc++]] = typeof globalObject[metadata.constantPool[code[pc++]]]
               break
             case OPCODES.STORE_GLOBAL:
-              writeGlobal(metadata.constantPool[code[pc++]], regs[code[pc++]], meta.strict)
+              writeGlobal(metadata.constantPool[code[pc++]], regs[code[pc++]], code[pc++])
               break
             case OPCODES.LOAD_THIS:
               regs[code[pc++]] = env.thisValue
@@ -881,15 +897,14 @@ function __scriptvmRun(metadata, globalObject) {
               var setObj = regs[code[pc++]]
               var setProp = regs[code[pc++]]
               var setValue = regs[code[pc++]]
-              setObj[setProp] = setValue
-              regs[setDst] = setValue
+              regs[setDst] = setProperty(setObj, setProp, setValue, code[pc++])
               break
             }
             case OPCODES.DELETE_PROP: {
               var delDst = code[pc++]
               var delObj = regs[code[pc++]]
               var delProp = regs[code[pc++]]
-              regs[delDst] = delete delObj[delProp]
+              regs[delDst] = deleteProperty(delObj, delProp, code[pc++])
               break
             }
             case OPCODES.LOAD_NEW_TARGET:
@@ -1138,7 +1153,7 @@ function __scriptvmRun(metadata, globalObject) {
               var storeDepth = code[pc++]
               var storeSlot = code[pc++]
               var storeSrc = code[pc++]
-              writeSlot(resolveEnv(env, storeDepth), storeSlot, regs[storeSrc], false)
+              writeSlot(resolveEnv(env, storeDepth), storeSlot, regs[storeSrc], false, code[pc++])
               break
             }
             case OPCODES.LOAD_GLOBAL:
@@ -1148,7 +1163,7 @@ function __scriptvmRun(metadata, globalObject) {
               regs[code[pc++]] = typeof globalObject[metadata.constantPool[code[pc++]]]
               break
             case OPCODES.STORE_GLOBAL:
-              writeGlobal(metadata.constantPool[code[pc++]], regs[code[pc++]], meta.strict)
+              writeGlobal(metadata.constantPool[code[pc++]], regs[code[pc++]], code[pc++])
               break
             case OPCODES.LOAD_THIS:
               regs[code[pc++]] = env.thisValue
@@ -1168,15 +1183,14 @@ function __scriptvmRun(metadata, globalObject) {
               var setObj = regs[code[pc++]]
               var setProp = regs[code[pc++]]
               var setValue = regs[code[pc++]]
-              setObj[setProp] = setValue
-              regs[setDst] = setValue
+              regs[setDst] = setProperty(setObj, setProp, setValue, code[pc++])
               break
             }
             case OPCODES.DELETE_PROP: {
               var delDst = code[pc++]
               var delObj = regs[code[pc++]]
               var delProp = regs[code[pc++]]
-              regs[delDst] = delete delObj[delProp]
+              regs[delDst] = deleteProperty(delObj, delProp, code[pc++])
               break
             }
             case OPCODES.LOAD_NEW_TARGET:

@@ -87,7 +87,7 @@ export function emitBytecode(program: AllocationResult, format: ProgramArtifact[
           bytecode.push(OPCODES.INIT_SLOT, instruction.depth, instruction.slot, instruction.src)
           break
         case 'store_slot':
-          bytecode.push(OPCODES.STORE_SLOT, instruction.depth, instruction.slot, instruction.src)
+          bytecode.push(OPCODES.STORE_SLOT, instruction.depth, instruction.slot, instruction.src, Number(instruction.strict ?? fn.strict))
           break
         case 'parameter_end':
           functions[fn.id].parameterEnd = bytecode.length
@@ -99,7 +99,7 @@ export function emitBytecode(program: AllocationResult, format: ProgramArtifact[
           bytecode.push(OPCODES.LOAD_GLOBAL, instruction.dst, pool.add(instruction.name))
           break
         case 'store_global':
-          bytecode.push(OPCODES.STORE_GLOBAL, pool.add(instruction.name), instruction.src)
+          bytecode.push(OPCODES.STORE_GLOBAL, pool.add(instruction.name), instruction.src, Number(instruction.strict ?? fn.strict))
           break
         case 'load_this':
           bytecode.push(OPCODES.LOAD_THIS, instruction.dst)
@@ -111,7 +111,7 @@ export function emitBytecode(program: AllocationResult, format: ProgramArtifact[
           bytecode.push(OPCODES.GET_PROP, instruction.dst, instruction.object, instruction.property)
           break
         case 'set_prop':
-          bytecode.push(OPCODES.SET_PROP, instruction.dst, instruction.object, instruction.property, instruction.value)
+          bytecode.push(OPCODES.SET_PROP, instruction.dst, instruction.object, instruction.property, instruction.value, Number(instruction.strict ?? fn.strict))
           break
         case 'binary':
           bytecode.push(
@@ -187,7 +187,7 @@ export function emitBytecode(program: AllocationResult, format: ProgramArtifact[
           bytecode.push(OPCODES.OBJECT_SET, instruction.object, instruction.key, instruction.value)
           break
         case 'delete_prop':
-          bytecode.push(OPCODES.DELETE_PROP, instruction.dst, instruction.object, instruction.property)
+          bytecode.push(OPCODES.DELETE_PROP, instruction.dst, instruction.object, instruction.property, Number(instruction.strict ?? fn.strict))
           break
         case 'load_new_target':
           bytecode.push(OPCODES.LOAD_NEW_TARGET, instruction.dst)
