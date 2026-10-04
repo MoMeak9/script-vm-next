@@ -334,6 +334,117 @@ describe('class lexical evaluation and constructor inheritance', () => {
     expect(JSON.parse(output)).toEqual([7, 'D', 'ReferenceError', 'undefined'])
   })
 
+  it('places temporary bindings for object expressions in class keys in the surrounding frame', () => {
+    expectEquivalent(`
+      function make() { return class { [({ get value() { return 'method'; } }).value]() { return this; } }; }
+      const C = make(); const object = new C(); globalThis.__result = object.method() === object;
+    `)
+  })
+
+  it('makes object methods created in class keys strict', () => {
+    expectEquivalent(`
+      let read; class C { [(read = ({ method() { return this; } }).method, 'key')]() {} }
+      globalThis.__result = read() === undefined;
+    `)
+  })
+
+  it('places computed anonymous-class naming temporaries outside the class method', () => {
+    expectEquivalent(`
+      const key = 'named';
+      function make() { return class { [({ [key]: class {} })[key].name]() { return 4; } }; }
+      const C = make(); globalThis.__result = new C().named();
+    `)
+  })
+
+  it('uses internal symbol descriptions for anonymous class and method names', () => {
+    expectEquivalent(`
+      const described = Symbol('original'); const anonymous = Symbol();
+      Object.defineProperty(Symbol.prototype, 'description', { get() { throw new Error('public getter'); }, configurable: true });
+      const values = { [described]: class {}, [anonymous]: class {} };
+      class C { [described]() {} get [anonymous]() { return 1; } }
+      globalThis.__result = [values[described].name, values[anonymous].name, C.prototype[described].name,
+        Object.getOwnPropertyDescriptor(C.prototype, anonymous).get.name];
+    `)
+  })
+
+  it.each(['super.value', "super[(log.push('expression'), key)]"])( 'rejects deletion of %s before coercing its key', expression => {
+    expectEquivalent(`
+      const log = []; const key = { toString() { log.push('coercion'); return 'value'; } };
+      class A {} class B extends A { run() { return delete ${expression}; } }
+      try { new B().run(); } catch (error) { log.push(error.name); }
+      globalThis.__result = log;
+    `)
+  })
+
+  it.each(['super[(log.push(1), key)]', 'delete super[(log.push(1), key)]'])( 'checks uninitialized derived this before evaluating %s', expression => {
+    // SuperProperty first calls GetThisBinding, even if its reference will be
+    // rejected by delete. V8 skips that early check for delete super[key].
+    // https://tc39.es/ecma262/#sec-super-keyword-runtime-semantics-evaluation
+    const sandbox: { __result?: unknown } = {}
+    runInNewContext(compileSource(`
+      const log = []; const key = { toString() { log.push(2); return 'value'; } };
+      class A {} class B extends A { constructor() { ${expression}; super(); } }
+      try { new B(); } catch (error) { log.push(error.name); }
+      globalThis.__result = log;
+    `).code, sandbox, { timeout: 1000 })
+    expect(sandbox.__result).toEqual(['ReferenceError'])
+  })
+
+  // Modern GetValue/PutValue cache a Super Reference's converted key, and
+  // MakeSuperPropertyReference captures its base before key coercion. Current
+  // V8 differs for these combinations, so use the specification as the oracle.
+  // https://tc39.es/ecma262/#sec-getvalue
+  // https://tc39.es/ecma262/#sec-putvalue
+  // https://tc39.es/ecma262/#sec-makesuperpropertyreference
+  it('coerces super keys once for each compound/update reference', () => {
+    const sandbox: { __result?: unknown } = {}
+    runInNewContext(compileSource(`
+      const log = []; const key = { toString() { log.push('key'); return 'value'; } };
+      class A {
+        get value() { log.push('get'); return this.saved || 1; }
+        set value(value) { log.push('set:' + value); this.saved = value; }
+      }
+      class B extends A {
+        run() { super[key] += (log.push('rhs'), 2); const old = super[key]++; return [old, this.saved]; }
+      }
+      globalThis.__result = [new B().run(), log];
+    `).code, sandbox, { timeout: 1000 })
+    expect(sandbox.__result).toEqual([[3, 4], ['key', 'get', 'rhs', 'set:3', 'key', 'get', 'set:4']])
+  })
+
+  it('captures the super base before key coercion can replace its prototype', () => {
+    const sandbox: { __result?: unknown } = {}
+    runInNewContext(compileSource(`
+      class A { get value() { return 1; } }
+      class B extends A { run(key) { return super[key]; } }
+      const key = { toString() { Object.setPrototypeOf(B.prototype, { value: 9 }); return 'value'; } };
+      globalThis.__result = new B().run(key);
+    `).code, sandbox, { timeout: 1000 })
+    expect(sandbox.__result).toBe(1)
+  })
+
+  it('rejects a null super base before coercing the property key', () => {
+    const sandbox: { __result?: unknown } = {}
+    runInNewContext(compileSource(`
+      const log = [];
+      class C { run() { return super[(log.push('expression'), { toString() { log.push('coercion'); return 'value'; } })]; } }
+      Object.setPrototypeOf(C.prototype, null);
+      try { new C().run(); } catch (error) { log.push(error.name); }
+      globalThis.__result = log;
+    `).code, sandbox, { timeout: 1000 })
+    expect(sandbox.__result).toEqual(['expression', 'TypeError'])
+  })
+
+  it('coerces a simple super assignment key after its right-hand side', () => {
+    const sandbox: { __result?: unknown } = {}
+    runInNewContext(compileSource(`
+      const log = []; const key = { toString() { log.push('coercion'); return 'value'; } };
+      class A {} class B extends A { run() { super[key] = (log.push('rhs'), 7); return this.value; } }
+      globalThis.__result = [new B().run(), log];
+    `).code, sandbox, { timeout: 1000 })
+    expect(sandbox.__result).toEqual([7, ['rhs', 'coercion']])
+  })
+
   it('preserves class name descriptors and explicitly named class values', () => {
     expectEquivalent(`
       const values = { ['inferred']: class Explicit {} };

@@ -1,6 +1,7 @@
 import { BINARY_OPS, OPCODES, UNARY_OPS } from '../runtime/opcodes'
 import { iteratorRuntimeSource } from './iterator-runtime'
 import { templateRuntimeSource } from './template-runtime'
+import { classRuntimeSource } from './class-runtime'
 
 export function generateRuntimeSource(): string {
   return `
@@ -30,6 +31,7 @@ function __scriptvmRun(metadata, globalObject) {
   function arraySlice(value, start) { return intrinsicReflect.apply(intrinsicArraySlice, value, [start]); }
   ${iteratorRuntimeSource}
   ${templateRuntimeSource}
+  ${classRuntimeSource}
   function toTemplateString(value) { return \`\${value}\`; }
   function readGlobal(name) {
     switch (name) {
@@ -48,6 +50,7 @@ function __scriptvmRun(metadata, globalObject) {
       case '@script-vm/intrinsic/RequireObject': return requireObject;
       case '@script-vm/intrinsic/ObjectRest': return objectRest;
       case '@script-vm/intrinsic/PropertyKey': return propertyKey;
+      case '@script-vm/intrinsic/FunctionName': return classFunctionName;
       case '@script-vm/intrinsic/EnumerateKeys': return enumerateKeys;
       case '@script-vm/intrinsic/FlattenArrays': return flattenArrays;
       case '@script-vm/intrinsic/Apply': return iteratorIntrinsicApply;
