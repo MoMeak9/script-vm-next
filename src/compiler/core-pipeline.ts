@@ -5,7 +5,7 @@ import { normalizeAst, parseSource } from './frontend'
 import { lowerToIR } from './lowering'
 import { packArtifact } from './pack'
 import { allocateRegisters } from './regalloc'
-import type { CompiledOutput, ModuleFormat } from './types'
+import type { CompiledOutput, ModuleFormat, ProgramArtifact } from './types'
 
 export interface ProgramCompileOptions {
   filename?: string
@@ -14,6 +14,8 @@ export interface ProgramCompileOptions {
   exportNames?: string[]
   exportsIdentifier?: string
   notifyIdentifier?: string
+  hostImports?: ProgramArtifact['hostImports']
+  hostExports?: ProgramArtifact['hostExports']
 }
 
 /** Shared, filesystem-free compiler pipeline used after module resolution. */
@@ -29,6 +31,8 @@ export function compileProgram(source: string | t.File, options: ProgramCompileO
     allocated, format, options.exportNames ?? [], Boolean(options.debug)
   ))
   if (options.notifyIdentifier) artifact.notifyIdentifier = options.notifyIdentifier
+  if (options.hostImports?.length) artifact.hostImports = options.hostImports
+  if (options.hostExports?.length) artifact.hostExports = options.hostExports
   const code = compileStep('pack', filename, () => packArtifact(artifact))
   return { code, artifact }
 }
