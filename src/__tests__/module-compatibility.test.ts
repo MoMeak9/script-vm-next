@@ -203,24 +203,28 @@ describe('automatic module compatibility', () => {
   it.each([false, true])('does not expose factory arguments at module scope (cycle: %s)', cyclic => {
     compareModules({
       'entry.mjs': `
-        import { inspect, ordinary, arrow } from './dependency.mjs';
-        export { inspect, ordinary, arrow };
+        import { inspect, ordinary, arrow, nested, direct } from './dependency.mjs';
+        export { inspect, ordinary, arrow, nested, direct };
       `,
       'dependency.mjs': `
         ${cyclic ? "import './entry.mjs';" : ''}
         const type = typeof arguments;
         const arrow = () => arguments;
-        export { arrow };
+        const nested = () => () => arguments;
+        let direct;
+        try { direct = arguments; } catch (error) { direct = error.name; }
+        export { arrow, nested, direct };
         export function inspect() { return type; }
         export function ordinary(value) { return arguments[0]; }
       `,
     }, mod => {
-      let absent;
+      let absent, nestedAbsent;
       try { mod.arrow(); } catch (error) { absent = error.name; }
+      try { mod.nested()(); } catch (error) { nestedAbsent = error.name; }
       globalThis.arguments = 7;
-      const present = mod.arrow();
+      const present = [mod.arrow(), mod.nested()()];
       delete globalThis.arguments;
-      return [mod.inspect(), absent, present, mod.ordinary(8)];
+      return [mod.inspect(), mod.direct, absent, nestedAbsent, present, mod.ordinary(8)];
     })
   })
 
