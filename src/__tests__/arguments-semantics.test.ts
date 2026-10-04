@@ -211,6 +211,21 @@ describe('arguments object reflection and unmapped behavior', () => {
       globalThis.__result = f(1);
     `)
   })
+  it('creates mapped indexes without consulting a replaced global String', () => {
+    expectEquivalent(`
+      const originalString = String;
+      let result;
+      function ordinary(a) {
+        a = 2;
+        const before = arguments[0];
+        arguments[0] = 3;
+        return [before, a, Object.getOwnPropertyDescriptor(arguments, '0').value];
+      }
+      try { globalThis.String = undefined; result = ordinary(1); }
+      finally { globalThis.String = originalString; }
+      globalThis.__result = result;
+    `)
+  })
   it('uses captured iterator symbols after user code replaces the global Symbol', () => {
     expectEquivalent(`
       const originalSymbol = Symbol;

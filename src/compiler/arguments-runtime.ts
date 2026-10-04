@@ -28,7 +28,7 @@ export const argumentsRuntimeSource = `
     var mapping = argumentsCreate(null);
     var seen = argumentsCreate(null);
     for (var i = 0; i < values.length; i++) {
-      argumentsDefine(target, String(i), {
+      argumentsDefine(target, i + '', {
         value: values[i], writable: true, enumerable: true, configurable: true
       });
     }
@@ -47,7 +47,7 @@ export const argumentsRuntimeSource = `
       var slot = meta.parameterSlots[i];
       if (!seen[slot]) {
         seen[slot] = true;
-        if (i < values.length) mapping[String(i)] = slot;
+        if (i < values.length) mapping[i + ''] = slot;
       }
     }
     return new intrinsicProxy(target, {
