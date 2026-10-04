@@ -1,12 +1,14 @@
 # script-vm-next
 
+**English** | [简体中文](README.zh-CN.md) | [Documentation / 文档导航](docs/README.md)
+
 A register-based JavaScript virtualization compiler. It converts source into bytecode and a self-contained JavaScript interpreter, with Node.js APIs, a CLI, and a browser playground.
 
 This project implements a **tested subset of JavaScript**. The current release target is **`0.2.0-beta.1`**; complete ES2015/ES6 conformance and general production readiness are not claimed. Read the [compatibility matrix](docs/compatibility.md) before adopting it for application code.
 
 ## Try the playground
 
-The GitHub Pages deployment is configured for [momeak9.github.io/script-vm-next](https://momeak9.github.io/script-vm-next/). Its first successful deployment enables that URL. Edit a standalone script, compile it, inspect the generated code and statistics, and run it with bounded console output and a stop button.
+The playground is live at **[momeak9.github.io/script-vm-next](https://momeak9.github.io/script-vm-next/)**, deployed through GitHub Actions to GitHub Pages. Edit a standalone script, compile it, inspect the generated code and statistics, and run it with bounded console output and a stop button.
 
 The playground accepts single-file JavaScript and emits an IIFE. It does not provide a DOM, local modules, `require`, or dynamic `import()`. Compilation runs locally in a browser worker. Execution uses a separate worker inside an opaque-origin sandbox iframe with a network-denying policy. Downloaded output uses the globals of its execution host: **the compiler's generated code is not itself a security sandbox**.
 
@@ -14,7 +16,7 @@ See [playground usage and deployment](docs/playground.md) for the execution mode
 
 ## Installation
 
-Registry publication is a separate maintainer action. This repository's release workflow requires an approved license and npm publishing access; this README does not establish that a version has been published. Once the `beta` dist-tag is available:
+The npm package has **not been published yet**. Registry publication requires the copyright holder's license decision and npm publishing access. Once the `beta` dist-tag is available:
 
 ```sh
 npm install script-vm-next@beta
@@ -74,7 +76,7 @@ const code = transform('./input.js', { format: 'iife' })
 
 `compile(inputPath, outputPath?, options?)` and `transform(inputPath, options?)` retain their file-based signatures. `transform` returns the generated string; `compile` returns the same `{ code, artifact }` shape as the source API. Omitting `outputPath` writes a sibling `.vm.js`, `.vm.mjs`, or `.vm.cjs` file according to the resolved format; passing `null` suppresses writing.
 
-The file API supports `format: 'auto' | 'iife' | 'esm' | 'cjs'`, `bundle` (default `true`), `external: string[]`, and `debug`. Automatic format detection considers filename extensions and module syntax. Local module bundling has explicit limits, including rejected circular dependencies; external imports require host CommonJS resolution. The reserved `obfuscate` option is not implemented and is rejected.
+The file API supports `format: 'auto' | 'iife' | 'esm' | 'cjs'`, `bundle` (default `true`), `external: string[]`, and `debug`. Automatic format detection considers filename extensions and module syntax. See the [compatibility matrix](docs/compatibility.md) for the current module-loading and output-format boundaries. The reserved `obfuscate` option is not implemented and is rejected.
 
 ## CLI
 
@@ -90,9 +92,9 @@ The `transform` subcommand is also accepted. Options include `--format auto|iife
 
 ## Language boundaries
 
-Tests cover selected cases of closures, lexical bindings, functions and arrows, destructuring, iterators, classes, generators, async functions, and module wrappers. These are scoped claims, not a checklist of fully implemented language editions. Known limits include strict/sloppy `this` distinctions, unresolved identifier reads, array destructuring of arbitrary iterables, inherited `for...in` properties, and several private-element cases. Consult the [compatibility matrix](docs/compatibility.md) for the current detail.
+Pass ordinary JavaScript directly to the source API, file API, or CLI. Compatibility handling for supported features is built into the compiler and runtime and is enabled by default; callers do not need a Babel configuration, a separate transpilation step, or source-code rewrites. Remaining gaps are tracked as compiler/runtime work in the [compatibility matrix](docs/compatibility.md).
 
-Compare representative application code with native JavaScript before use. Code that parses successfully can still hit an unverified semantic boundary. Generated programs use host built-ins such as `Promise`, `Map`, and `Symbol`; this package does not supply a polyfill layer.
+Tests cover selected cases of closures, lexical bindings, functions and arrows, destructuring, iterators, classes, generators, async functions, and module wrappers. These are scoped claims, not a checklist of fully implemented language editions. ES6 means ES2015; features from later editions have separate coverage. Code that parses successfully can still hit an unverified semantic boundary. Generated programs use host built-ins such as `Promise`, `Map`, and `Symbol`; this package does not supply a polyfill layer.
 
 ## Development and validation
 
@@ -130,7 +132,7 @@ The [CI workflow](.github/workflows/ci.yml) tests the compiler on Node.js 20, 22
 
 Source → optional Node module bundling → Babel parsing and normalization → register-based IR → bytecode → runtime generation → output wrapping.
 
-Read the [architecture guide](docs/01-architecture-overview.md), [tutorials](docs/00-tutorial-guide.md), and [compatibility matrix](docs/compatibility.md). Further compatibility work should add native-versus-VM regressions, resolve documented semantic gaps, integrate selected Test262 cases, and validate real application inputs. A stable release requires evidence for its declared language scope; packaging and a playground alone do not establish language conformance.
+Start with the [documentation index](docs/README.md), which labels each document's language. The [architecture guide](docs/01-architecture-overview.md) and [tutorials](docs/00-tutorial-guide.md) are currently in Simplified Chinese; the [compatibility matrix](docs/compatibility.md) is in English. Further compatibility work should add native-versus-VM regressions, resolve documented semantic gaps, integrate selected Test262 cases, and validate real application inputs. A stable release requires evidence for its declared language scope; packaging and a playground alone do not establish language conformance.
 
 ## License
 
