@@ -980,11 +980,46 @@ function toPropertyKeyExpression(key: t.Expression | t.Identifier, computed: boo
   return t.cloneNode(key as t.Expression, true)
 }
 
-function buildObjectDefinePropertyCall(target: t.Identifier, key: t.Expression, descriptor: t.ObjectExpression): t.Expression {
-  return t.callExpression(
-    t.memberExpression(t.identifier('Object'), t.identifier('defineProperty')),
-    [t.cloneNode(target, true), key, descriptor]
+function transformObjectSuper(body: t.BlockStatement, home: t.Identifier, strict: boolean) {
+  const root = t.functionDeclaration(t.identifier('_method'), [], body)
+  const ast = t.file(t.program([root]))
+  const reference = (member: t.MemberExpression) => t.memberExpression(
+    iteratorIntrinsic('ObjectSuperReference', [
+      t.cloneNode(home),
+      toPropertyKeyExpression(member.property as t.Expression, member.computed),
+      t.thisExpression(), t.booleanLiteral(strict),
+    ]), t.identifier('value')
   )
+  traverse(ast, {
+    Function(path) {
+      if (path.node !== root && !path.isArrowFunctionExpression()) path.skip()
+    },
+    Class(path) { path.skip() },
+    UnaryExpression(path) {
+      const argument = path.node.argument
+      if (path.node.operator !== 'delete' || !t.isMemberExpression(argument) || !t.isSuper(argument.object)) return
+      // Delete evaluates a computed key expression, but does not coerce it or
+      // look up the base before throwing the required ReferenceError.
+      path.replaceWith(iteratorIntrinsic('ObjectSuperDelete', [
+        toPropertyKeyExpression(argument.property as t.Expression, argument.computed),
+      ]))
+      path.skip()
+    },
+    CallExpression: { exit(path) {
+      const callee = path.node.callee
+      if (!t.isMemberExpression(callee) || !t.isSuper(callee.object)) return
+      path.replaceWith(iteratorIntrinsic('Apply', [
+        reference(callee), t.thisExpression(),
+        buildConcatArgs(path.node.arguments as (t.Expression | t.SpreadElement)[]),
+      ]))
+      path.skip()
+    } },
+    MemberExpression: { exit(path) {
+      if (!t.isSuper(path.node.object) || path.parentPath.isCallExpression({ callee: path.node })) return
+      path.replaceWith(reference(path.node))
+      path.skip()
+    } },
+  })
 }
 
 function buildObjectLiteralSequence(
@@ -994,61 +1029,47 @@ function buildObjectLiteralSequence(
 ): t.Expression {
   const target = t.identifier(nextId())
   const items: t.Expression[] = [
-    t.assignmentExpression('=', t.cloneNode(target, true), t.objectExpression([])),
+    t.assignmentExpression('=', t.cloneNode(target), t.objectExpression([])),
   ]
 
   for (const property of properties) {
     if (t.isSpreadElement(property)) {
-      items.push(
-        t.callExpression(
-          t.memberExpression(t.identifier('Object'), t.identifier('assign')),
-          [t.cloneNode(target, true), t.cloneNode(property.argument, true) as t.Expression]
-        )
-      )
+      items.push(iteratorIntrinsic('ObjectSpread', [t.cloneNode(target), property.argument]))
       continue
     }
 
-    const key = toPropertyKeyExpression(property.key as t.Expression | t.Identifier, property.computed)
-
+    const rawKey = toPropertyKeyExpression(property.key as t.Expression | t.Identifier, property.computed)
+    // ToPropertyKey precedes evaluation of the value, including any side effects
+    // from user coercion. Passing the raw object to defineProperty is too late.
+    const key = property.computed ? iteratorIntrinsic('PropertyKey', [rawKey]) : rawKey
     if (t.isObjectProperty(property)) {
-      items.push(
-        buildObjectDefinePropertyCall(
-          target,
-          key,
-          t.objectExpression([
-            t.objectProperty(t.identifier('value'), t.cloneNode(property.value, true) as t.Expression),
-            t.objectProperty(t.identifier('writable'), t.booleanLiteral(true)),
-            t.objectProperty(t.identifier('enumerable'), t.booleanLiteral(true)),
-            t.objectProperty(t.identifier('configurable'), t.booleanLiteral(true)),
-          ])
-        )
-      )
+      if (!property.computed && !property.shorthand && t.isStringLiteral(rawKey, { value: '__proto__' })) {
+        items.push(iteratorIntrinsic('ObjectSetPrototype', [t.cloneNode(target), property.value as t.Expression]))
+      } else {
+        const value = property.value as t.Expression
+        const inferName = t.isArrowFunctionExpression(value) || t.isFunctionExpression(value) && !value.id
+        items.push(iteratorIntrinsic('ObjectDefineData', [t.cloneNode(target), key, value, t.booleanLiteral(inferName)]))
+      }
       continue
     }
 
-    const fn = t.functionExpression(
-      null,
-      property.params as any,
-      t.cloneNode(property.body, true),
-      property.generator,
-      property.async
-    )
-    fn.extra = { ...property.extra }
-    const descriptorProps: t.ObjectProperty[] = []
-    if (property.kind === 'method') {
-      descriptorProps.push(t.objectProperty(t.identifier('value'), fn))
-      descriptorProps.push(t.objectProperty(t.identifier('writable'), t.booleanLiteral(true)))
-    } else if (property.kind === 'get') {
-      descriptorProps.push(t.objectProperty(t.identifier('get'), fn))
-    } else {
-      descriptorProps.push(t.objectProperty(t.identifier('set'), fn))
-    }
-    descriptorProps.push(t.objectProperty(t.identifier('enumerable'), t.booleanLiteral(true)))
-    descriptorProps.push(t.objectProperty(t.identifier('configurable'), t.booleanLiteral(true)))
-    items.push(buildObjectDefinePropertyCall(target, key, t.objectExpression(descriptorProps)))
+    const home = t.identifier(nextId())
+    const methodBody = t.cloneNode(property.body, true)
+    const strict = path.isInStrictMode() || methodBody.directives.some(directive => directive.value.value === 'use strict')
+    transformObjectSuper(methodBody, home, strict)
+    const fn = t.functionExpression(null, property.params as any, methodBody, property.generator, property.async)
+    fn.extra = { ...property.extra, scriptVmMethod: true }
+    // Each method captures the actual object created on this evaluation, even
+    // when a loop reuses the outer temporary or a method is later copied.
+    const captureHome = t.callExpression(t.functionExpression(null, [home], t.blockStatement([
+      t.returnStatement(fn),
+    ])), [t.cloneNode(target)])
+    items.push(iteratorIntrinsic('ObjectDefineMethod', [
+      t.cloneNode(target), key, t.stringLiteral(property.kind === 'method' ? 'value' : property.kind), captureHome,
+    ]))
   }
 
-  items.push(t.cloneNode(target, true))
+  items.push(t.cloneNode(target))
   declareTempBindings(path, [target])
   return t.sequenceExpression(items)
 }
@@ -1334,7 +1355,7 @@ export function normalizeAst(file: t.File): t.File {
 
     CallExpression(path) {
       // Class lowering must preserve super construction and new.target.
-      if (t.isSuper(path.node.callee)) return
+      if (t.isSuper(path.node.callee) || t.isMemberExpression(path.node.callee) && t.isSuper(path.node.callee.object)) return
       if (t.isImport(path.node.callee)) {
         path.node.callee = t.identifier('__vm_import')
         return
@@ -1382,41 +1403,13 @@ export function normalizeAst(file: t.File): t.File {
       path.skip()
     },
 
-    ObjectExpression(path) {
-      const hasSpread = path.node.properties.some(prop => t.isSpreadElement(prop))
-      const hasMethods = path.node.properties.some(prop => t.isObjectMethod(prop))
-      if (!hasSpread && !hasMethods) return
-
-      if (hasMethods) {
-        path.replaceWith(buildObjectLiteralSequence(path, path.node.properties, nextId))
-        path.skip()
-        return
-      }
-
-      const assignArgs: t.Expression[] = [t.objectExpression([])]
-      let currentProps: t.ObjectProperty[] = []
-      for (const prop of path.node.properties) {
-        if (t.isSpreadElement(prop)) {
-          if (currentProps.length > 0) {
-            assignArgs.push(t.objectExpression(currentProps))
-            currentProps = []
-          }
-          assignArgs.push(prop.argument)
-        } else {
-          currentProps.push(prop as t.ObjectProperty)
-        }
-      }
-      if (currentProps.length > 0) {
-        assignArgs.push(t.objectExpression(currentProps))
-      }
-      path.replaceWith(
-        t.callExpression(
-          t.memberExpression(t.identifier('Object'), t.identifier('assign')),
-          assignArgs
-        )
-      )
+    ObjectExpression: { exit(path) {
+      // Normalize every nonempty source literal, including data-only literals:
+      // assignment cannot implement __proto__ and own-property definitions.
+      if (path.node.properties.length === 0) return
+      path.replaceWith(buildObjectLiteralSequence(path, path.node.properties, nextId))
       path.skip()
-    },
+    } },
 
     OptionalMemberExpression(path) {
       if (!isOptionalChainRoot(path)) return
