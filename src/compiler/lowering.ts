@@ -371,7 +371,7 @@ class ModuleLowerer {
       }
       const reg = builder.allocReg()
       builder.emit({ op: 'make_function', dst: reg, functionId })
-      builder.emit({ op: 'store_slot', depth: binding.depth, slot: binding.slot, src: reg })
+      builder.emit({ op: 'store_slot', strict: builder.strict, depth: binding.depth, slot: binding.slot, src: reg })
     }
   }
 
@@ -414,7 +414,7 @@ class ModuleLowerer {
         if (declaration.init) {
           const init = this.compileExpression(declaration.init, builder, scope)
           if (statement.kind === 'var') {
-            builder.emit({ op: 'store_slot', depth: binding.depth, slot: binding.slot, src: init })
+            builder.emit({ op: 'store_slot', strict: builder.strict, depth: binding.depth, slot: binding.slot, src: init })
           } else {
             builder.emit({ op: 'init_slot', depth: binding.depth, slot: binding.slot, src: init })
           }
@@ -851,7 +851,7 @@ class ModuleLowerer {
           const length = builder.allocReg()
           builder.emit({ op: 'get_prop', dst: length, object: dst, property })
           const nextLength = this.binary('+', length, this.loadLiteral(1, builder), builder)
-          builder.emit({ op: 'set_prop', dst: builder.allocReg(), object: dst, property, value: nextLength })
+          builder.emit({ op: 'set_prop', strict: builder.strict, dst: builder.allocReg(), object: dst, property, value: nextLength })
           continue
         }
         if (t.isSpreadElement(element)) {
@@ -904,7 +904,7 @@ class ModuleLowerer {
             ? this.compileExpression(expression.argument.property as t.Expression, builder, scope)
             : this.loadLiteral((expression.argument.property as t.Identifier).name, builder)
           const dst = builder.allocReg()
-          builder.emit({ op: 'delete_prop', dst, object, property })
+          builder.emit({ op: 'delete_prop', strict: builder.strict, dst, object, property })
           return dst
         }
         // delete on non-member (identifier, literal, etc.) — evaluate for side effects, return true
@@ -1053,9 +1053,9 @@ class ModuleLowerer {
       const binding = builder.resolve(scope, left.name)
       const value = this.compileExpression(right, builder, scope)
       if (binding.kind === 'slot') {
-        builder.emit({ op: 'store_slot', depth: binding.depth, slot: binding.slot, src: value })
+        builder.emit({ op: 'store_slot', strict: builder.strict, depth: binding.depth, slot: binding.slot, src: value })
       } else {
-        builder.emit({ op: 'store_global', name: binding.name, src: value })
+        builder.emit({ op: 'store_global', strict: builder.strict, name: binding.name, src: value })
       }
       return value
     }
@@ -1068,7 +1068,7 @@ class ModuleLowerer {
       // property-key coercion) until after the RHS has been evaluated.
       const value = this.compileExpression(right, builder, scope)
       const dst = builder.allocReg()
-      builder.emit({ op: 'set_prop', dst, object, property, value })
+      builder.emit({ op: 'set_prop', strict: builder.strict, dst, object, property, value })
       return dst
     }
     throw new Error('Unsupported assignment target')
@@ -1106,9 +1106,9 @@ class ModuleLowerer {
         const value = this.compileExpression(expression.right, builder, scope)
         const binding = builder.resolve(scope, expression.left.name)
         if (binding.kind === 'slot') {
-          builder.emit({ op: 'store_slot', depth: binding.depth, slot: binding.slot, src: value })
+          builder.emit({ op: 'store_slot', strict: builder.strict, depth: binding.depth, slot: binding.slot, src: value })
         } else {
-          builder.emit({ op: 'store_global', name: binding.name, src: value })
+          builder.emit({ op: 'store_global', strict: builder.strict, name: binding.name, src: value })
         }
         builder.emit({ op: 'move', dst, src: value })
         builder.emit({ op: 'label', name: endLabel })
@@ -1119,9 +1119,9 @@ class ModuleLowerer {
       const result = this.binary(baseOp, currentValue, value, builder)
       const binding = builder.resolve(scope, expression.left.name)
       if (binding.kind === 'slot') {
-        builder.emit({ op: 'store_slot', depth: binding.depth, slot: binding.slot, src: result })
+        builder.emit({ op: 'store_slot', strict: builder.strict, depth: binding.depth, slot: binding.slot, src: result })
       } else {
-        builder.emit({ op: 'store_global', name: binding.name, src: result })
+        builder.emit({ op: 'store_global', strict: builder.strict, name: binding.name, src: result })
       }
       return result
     }
@@ -1152,7 +1152,7 @@ class ModuleLowerer {
         }
 
         const value = this.compileExpression(expression.right, builder, scope)
-        builder.emit({ op: 'set_prop', dst, object, property, value })
+        builder.emit({ op: 'set_prop', strict: builder.strict, dst, object, property, value })
         builder.emit({ op: 'label', name: endLabel })
         return dst
       }
@@ -1160,7 +1160,7 @@ class ModuleLowerer {
       const value = this.compileExpression(expression.right, builder, scope)
       const result = this.binary(baseOp, currentValue, value, builder)
       const dst = builder.allocReg()
-      builder.emit({ op: 'set_prop', dst, object, property, value: result })
+      builder.emit({ op: 'set_prop', strict: builder.strict, dst, object, property, value: result })
       return dst
     }
 
@@ -1174,9 +1174,9 @@ class ModuleLowerer {
       const updated = this.unary(expression.operator, current, builder)
       const binding = builder.resolve(scope, expression.argument.name)
       if (binding.kind === 'slot') {
-        builder.emit({ op: 'store_slot', depth: binding.depth, slot: binding.slot, src: updated })
+        builder.emit({ op: 'store_slot', strict: builder.strict, depth: binding.depth, slot: binding.slot, src: updated })
       } else {
-        builder.emit({ op: 'store_global', name: binding.name, src: updated })
+        builder.emit({ op: 'store_global', strict: builder.strict, name: binding.name, src: updated })
       }
       return expression.prefix ? updated : current
     }
@@ -1191,7 +1191,7 @@ class ModuleLowerer {
       const current = this.unary('to_numeric', value, builder)
       const updated = this.unary(expression.operator, current, builder)
       const setDst = builder.allocReg()
-      builder.emit({ op: 'set_prop', dst: setDst, object, property, value: updated })
+      builder.emit({ op: 'set_prop', strict: builder.strict, dst: setDst, object, property, value: updated })
       return expression.prefix ? updated : current
     }
 
