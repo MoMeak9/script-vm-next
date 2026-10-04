@@ -19,12 +19,13 @@ function __scriptvmRun(metadata, globalObject) {
   var intrinsicObject = Object;
   var intrinsicWeakMap = WeakMap;
   var intrinsicWeakSet = WeakSet;
-  var completionRecords = new intrinsicWeakSet();
   var intrinsicTypeError = TypeError;
   var intrinsicReferenceError = ReferenceError;
   var intrinsicReflect = Reflect;
   var intrinsicReflectSet = Reflect.set;
   var intrinsicReflectDelete = Reflect.deleteProperty;
+  var intrinsicIteratorSymbol = Symbol.iterator;
+  var intrinsicAsyncIteratorSymbol = Symbol.asyncIterator;
   var intrinsicProxy = Proxy;
   var intrinsicArraySlice = Array.prototype.slice;
   function arraySlice(value, start) { return intrinsicReflect.apply(intrinsicArraySlice, value, [start]); }
@@ -143,14 +144,24 @@ function __scriptvmRun(metadata, globalObject) {
 
   function completion(type, value) {
     var record = { type: type, value: value }
-    completionRecords.add(record)
     return record
   }
 
-  function generatorCompletion(value) {
-    // A return injected while finally is yielding emerges from yield* as the
-    // caller's raw value. Keep it distinct from internal completion records.
-    return completionRecords.has(value) ? value : completion(RETURN, value)
+  function generatorDriver(iterator) {
+    // Native yield* forwards public next/throw/return here. Feed each resume as
+    // data into the VM so interpreted finally can replace *any* completion,
+    // including return with a break/continue, before the native wrapper exits.
+    var started = false;
+    return {
+      next: function(value) {
+        if (!started) { started = true; return iterator.next(); }
+        return iterator.next(completion(NORMAL, value));
+      },
+      throw: function(value) { return iterator.next(completion(THROW, value)); },
+      return: function(value) { return iterator.next(completion(RETURN, value)); },
+      [intrinsicIteratorSymbol]: function() { return this; },
+      [intrinsicAsyncIteratorSymbol]: function() { return this; }
+    };
   }
 
   function assertInitialized(targetEnv, slot) {
@@ -244,10 +255,10 @@ function __scriptvmRun(metadata, globalObject) {
     if (meta.generator) {
       var generator = meta.async ? async function*(frame, receiver, args) {
         'use strict';
-        return yield* executeAsyncGenerator(functionId, parentEnv, receiver, args, undefined, frame)
+        return yield* generatorDriver(executeAsyncGenerator(functionId, parentEnv, receiver, args, undefined, frame))
       } : function*(frame, receiver, args) {
         'use strict';
-        return yield* executeGenerator(functionId, parentEnv, receiver, args, undefined, frame)
+        return yield* generatorDriver(executeGenerator(functionId, parentEnv, receiver, args, undefined, frame))
       }
       // Parameter expressions run when the generator is called, before its first
       // next(). A concise method keeps this eager wrapper non-constructable.
@@ -809,7 +820,6 @@ function __scriptvmRun(metadata, globalObject) {
 
     function* run(start, end) {
       var pc = start
-      var externalReturn = false
       while (pc < end) {
         var op = code[pc++]
         try {
@@ -962,40 +972,21 @@ function __scriptvmRun(metadata, globalObject) {
               var tryEnd = catchStart !== after ? catchStart : (finallyStart !== after ? finallyStart : after)
               var catchEnd = finallyStart !== after ? finallyStart : after
               var savedEnv = env
-              var tryCompletion
-              var nativeAbrupt = true
-              try {
-                tryCompletion = generatorCompletion(yield* run(tryStart, tryEnd))
-                env = savedEnv
-                if (tryCompletion.type === THROW && catchStart !== after) {
-                  if (catchSlot >= 0) {
-                    env = createScopeEnv(meta, env, env.thisValue, env.args, [catchSlot], null)
-                    writeSlot(resolveEnv(env, 0), catchSlot, tryCompletion.value, true)
-                  }
-                  tryCompletion = generatorCompletion(yield* run(catchStart, catchEnd))
-                  env = savedEnv
+              var tryCompletion = yield* run(tryStart, tryEnd)
+              env = savedEnv
+              if (tryCompletion.type === THROW && catchStart !== after) {
+                if (catchSlot >= 0) {
+                  env = createScopeEnv(meta, env, env.thisValue, env.args, [catchSlot], null)
+                  writeSlot(resolveEnv(env, 0), catchSlot, tryCompletion.value, true)
                 }
-                nativeAbrupt = false
-              } finally {
-                env = savedEnv
-                // Native generator.return() propagates through yield* as a
-                // return completion. A native finally guarantees that the
-                // interpreted finally (including iterator cleanup) still runs.
-                if (finallyStart !== after) {
-                  var finallyCompletion = generatorCompletion(yield* run(finallyStart, after))
-                  if (finallyCompletion.type !== NORMAL) {
-                    if (nativeAbrupt) {
-                      if (finallyCompletion.type === THROW) {
-                        externalReturn = true
-                        throw finallyCompletion.value
-                      }
-                      if (finallyCompletion.type === RETURN) return finallyCompletion.value
-                    }
-                    tryCompletion = finallyCompletion
-                  }
-                }
+                tryCompletion = yield* run(catchStart, catchEnd)
                 env = savedEnv
               }
+              if (finallyStart !== after) {
+                var finallyCompletion = yield* run(finallyStart, after)
+                if (finallyCompletion.type !== NORMAL) tryCompletion = finallyCompletion
+              }
+              env = savedEnv
               if (tryCompletion.type === JUMP && tryCompletion.value.target >= start && tryCompletion.value.target < end) {
                 env = unwindScope(env, tryCompletion.value.depth)
                 pc = tryCompletion.value.target
@@ -1038,9 +1029,26 @@ function __scriptvmRun(metadata, globalObject) {
               var yieldSrc = code[pc++]
               var delegate = code[pc++]
               if (delegate) {
-                regs[yieldDst] = yield* regs[yieldSrc]
+                // A native delegation shell supplies the spec iterator protocol
+                // (method validation, missing throw cleanup, and async fallback).
+                // Only the VM owns the surrounding user control flow.
+                var delegatedValue = regs[yieldSrc]
+                var delegatedIterator = (function*() { return yield* delegatedValue })()
+                var delegatedStep = delegatedIterator.next()
+                var resumeType = NORMAL
+                while (!delegatedStep.done) {
+                  var resume = yield delegatedStep.value
+                  resumeType = resume.type
+                  delegatedStep = (resume.type === RETURN ? delegatedIterator.return(resume.value)
+                    : resume.type === THROW ? delegatedIterator.throw(resume.value)
+                    : delegatedIterator.next(resume.value))
+                }
+                if (resumeType === RETURN) return completion(RETURN, delegatedStep.value)
+                regs[yieldDst] = delegatedStep.value
               } else {
-                regs[yieldDst] = yield regs[yieldSrc]
+                var resume = yield regs[yieldSrc]
+                if (resume.type !== NORMAL) return resume
+                regs[yieldDst] = resume.value
               }
               break
             }
@@ -1072,7 +1080,6 @@ function __scriptvmRun(metadata, globalObject) {
               throw new Error('Unknown opcode: ' + op + ' at pc ' + (pc - 1))
           }
         } catch (error) {
-          if (externalReturn) throw error
           return completion(THROW, error)
         }
       }
@@ -1080,7 +1087,7 @@ function __scriptvmRun(metadata, globalObject) {
       return completion(NORMAL, undefined)
     }
 
-    var result = generatorCompletion(yield* run(frame && meta.parameterEnd !== undefined ? meta.parameterEnd : meta.entry, meta.end))
+    var result = yield* run(frame && meta.parameterEnd !== undefined ? meta.parameterEnd : meta.entry, meta.end)
     if (result.type === THROW) {
       throw result.value
     }
@@ -1095,7 +1102,6 @@ function __scriptvmRun(metadata, globalObject) {
 
     async function* run(start, end) {
       var pc = start
-      var externalReturn = false
       while (pc < end) {
         var op = code[pc++]
         try {
@@ -1248,40 +1254,21 @@ function __scriptvmRun(metadata, globalObject) {
               var tryEnd = catchStart !== after ? catchStart : (finallyStart !== after ? finallyStart : after)
               var catchEnd = finallyStart !== after ? finallyStart : after
               var savedEnv = env
-              var tryCompletion
-              var nativeAbrupt = true
-              try {
-                tryCompletion = generatorCompletion(yield* run(tryStart, tryEnd))
-                env = savedEnv
-                if (tryCompletion.type === THROW && catchStart !== after) {
-                  if (catchSlot >= 0) {
-                    env = createScopeEnv(meta, env, env.thisValue, env.args, [catchSlot], null)
-                    writeSlot(resolveEnv(env, 0), catchSlot, tryCompletion.value, true)
-                  }
-                  tryCompletion = generatorCompletion(yield* run(catchStart, catchEnd))
-                  env = savedEnv
+              var tryCompletion = yield* run(tryStart, tryEnd)
+              env = savedEnv
+              if (tryCompletion.type === THROW && catchStart !== after) {
+                if (catchSlot >= 0) {
+                  env = createScopeEnv(meta, env, env.thisValue, env.args, [catchSlot], null)
+                  writeSlot(resolveEnv(env, 0), catchSlot, tryCompletion.value, true)
                 }
-                nativeAbrupt = false
-              } finally {
-                env = savedEnv
-                // Native generator.return() propagates through yield* as a
-                // return completion. A native finally guarantees that the
-                // interpreted finally (including iterator cleanup) still runs.
-                if (finallyStart !== after) {
-                  var finallyCompletion = generatorCompletion(yield* run(finallyStart, after))
-                  if (finallyCompletion.type !== NORMAL) {
-                    if (nativeAbrupt) {
-                      if (finallyCompletion.type === THROW) {
-                        externalReturn = true
-                        throw finallyCompletion.value
-                      }
-                      if (finallyCompletion.type === RETURN) return finallyCompletion.value
-                    }
-                    tryCompletion = finallyCompletion
-                  }
-                }
+                tryCompletion = yield* run(catchStart, catchEnd)
                 env = savedEnv
               }
+              if (finallyStart !== after) {
+                var finallyCompletion = yield* run(finallyStart, after)
+                if (finallyCompletion.type !== NORMAL) tryCompletion = finallyCompletion
+              }
+              env = savedEnv
               if (tryCompletion.type === JUMP && tryCompletion.value.target >= start && tryCompletion.value.target < end) {
                 env = unwindScope(env, tryCompletion.value.depth)
                 pc = tryCompletion.value.target
@@ -1325,9 +1312,26 @@ function __scriptvmRun(metadata, globalObject) {
               var yieldSrc = code[pc++]
               var delegate = code[pc++]
               if (delegate) {
-                regs[yieldDst] = yield* regs[yieldSrc]
+                // A native delegation shell supplies the spec iterator protocol
+                // (method validation, missing throw cleanup, and async fallback).
+                // Only the VM owns the surrounding user control flow.
+                var delegatedValue = regs[yieldSrc]
+                var delegatedIterator = (async function*() { return yield* delegatedValue })()
+                var delegatedStep = await delegatedIterator.next()
+                var resumeType = NORMAL
+                while (!delegatedStep.done) {
+                  var resume = yield delegatedStep.value
+                  resumeType = resume.type
+                  delegatedStep = await (resume.type === RETURN ? delegatedIterator.return(resume.value)
+                    : resume.type === THROW ? delegatedIterator.throw(resume.value)
+                    : delegatedIterator.next(resume.value))
+                }
+                if (resumeType === RETURN) return completion(RETURN, delegatedStep.value)
+                regs[yieldDst] = delegatedStep.value
               } else {
-                regs[yieldDst] = yield regs[yieldSrc]
+                var resume = yield regs[yieldSrc]
+                if (resume.type !== NORMAL) return resume
+                regs[yieldDst] = resume.value
               }
               break
             }
@@ -1359,7 +1363,6 @@ function __scriptvmRun(metadata, globalObject) {
               throw new Error('Unknown opcode: ' + op + ' at pc ' + (pc - 1))
           }
         } catch (error) {
-          if (externalReturn) throw error
           return completion(THROW, error)
         }
       }
@@ -1367,7 +1370,7 @@ function __scriptvmRun(metadata, globalObject) {
       return completion(NORMAL, undefined)
     }
 
-    var result = generatorCompletion(yield* run(frame && meta.parameterEnd !== undefined ? meta.parameterEnd : meta.entry, meta.end))
+    var result = yield* run(frame && meta.parameterEnd !== undefined ? meta.parameterEnd : meta.entry, meta.end)
     if (result.type === THROW) {
       throw result.value
     }

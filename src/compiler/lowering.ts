@@ -5,14 +5,15 @@ interface LoopLabels {
   breakLabel: string
   scopeDepth: number
   continueLabel: string
-  label?: string
+  labels?: string[]
 }
 
 interface BreakableLabels {
+  labelOnly?: boolean
   breakLabel: string
   scopeDepth: number
   continueLabel?: string
-  label?: string
+  labels?: string[]
 }
 
 interface ScopeBinding {
@@ -145,7 +146,6 @@ class FunctionBuilder {
 
 class ModuleLowerer {
   functions: FunctionBuilder[] = []
-  pendingLabel?: string
 
   constructor(private readonly exportsIdentifier = '__exports') {}
 
@@ -375,7 +375,7 @@ class ModuleLowerer {
     }
   }
 
-  private compileStatement(statement: t.Statement, builder: FunctionBuilder, scope: ScopeFrame) {
+  private compileStatement(statement: t.Statement, builder: FunctionBuilder, scope: ScopeFrame, statementLabels: string[] = []) {
     if (t.isFunctionDeclaration(statement)) {
       return
     }
@@ -459,9 +459,8 @@ class ModuleLowerer {
       const test = this.compileExpression(statement.test, builder, scope)
       builder.emit({ op: 'jump_if_false', condition: test, target: endLabel })
       builder.emit({ op: 'label', name: bodyLabel })
-      const whileLabel = this.pendingLabel; this.pendingLabel = undefined
-      builder.loopStack.push({ breakLabel: endLabel, continueLabel: testLabel, label: whileLabel, scopeDepth: scope.runtimeDepth - builder.rootScope.runtimeDepth })
-      builder.breakStack.push({ breakLabel: endLabel, continueLabel: testLabel, label: whileLabel, scopeDepth: scope.runtimeDepth - builder.rootScope.runtimeDepth })
+      builder.loopStack.push({ breakLabel: endLabel, continueLabel: testLabel, labels: statementLabels, scopeDepth: scope.runtimeDepth - builder.rootScope.runtimeDepth })
+      builder.breakStack.push({ breakLabel: endLabel, continueLabel: testLabel, labels: statementLabels, scopeDepth: scope.runtimeDepth - builder.rootScope.runtimeDepth })
       this.compileStatement(statement.body, builder, scope)
       builder.loopStack.pop()
       builder.breakStack.pop()
@@ -476,9 +475,8 @@ class ModuleLowerer {
       const endLabel = builder.label('do_end')
 
       builder.emit({ op: 'label', name: bodyLabel })
-      const doLabel = this.pendingLabel; this.pendingLabel = undefined
-      builder.loopStack.push({ breakLabel: endLabel, continueLabel: testLabel, label: doLabel, scopeDepth: scope.runtimeDepth - builder.rootScope.runtimeDepth })
-      builder.breakStack.push({ breakLabel: endLabel, continueLabel: testLabel, label: doLabel, scopeDepth: scope.runtimeDepth - builder.rootScope.runtimeDepth })
+      builder.loopStack.push({ breakLabel: endLabel, continueLabel: testLabel, labels: statementLabels, scopeDepth: scope.runtimeDepth - builder.rootScope.runtimeDepth })
+      builder.breakStack.push({ breakLabel: endLabel, continueLabel: testLabel, labels: statementLabels, scopeDepth: scope.runtimeDepth - builder.rootScope.runtimeDepth })
       this.compileStatement(statement.body, builder, scope)
       builder.loopStack.pop()
       builder.breakStack.pop()
@@ -520,9 +518,8 @@ class ModuleLowerer {
         const test = this.compileExpression(statement.test, builder, loopScope)
         builder.emit({ op: 'jump_if_false', condition: test, target: endLabel })
       }
-      const forLabel = this.pendingLabel; this.pendingLabel = undefined
-      builder.loopStack.push({ breakLabel: endLabel, continueLabel: updateLabel, label: forLabel, scopeDepth: loopScope.runtimeDepth - builder.rootScope.runtimeDepth })
-      builder.breakStack.push({ breakLabel: endLabel, continueLabel: updateLabel, label: forLabel, scopeDepth: loopScope.runtimeDepth - builder.rootScope.runtimeDepth })
+      builder.loopStack.push({ breakLabel: endLabel, continueLabel: updateLabel, labels: statementLabels, scopeDepth: loopScope.runtimeDepth - builder.rootScope.runtimeDepth })
+      builder.breakStack.push({ breakLabel: endLabel, continueLabel: updateLabel, labels: statementLabels, scopeDepth: loopScope.runtimeDepth - builder.rootScope.runtimeDepth })
       this.compileStatement(statement.body, builder, loopScope)
       builder.loopStack.pop()
       builder.breakStack.pop()
@@ -545,12 +542,12 @@ class ModuleLowerer {
       if (statement.label) {
         let target: BreakableLabels | undefined
         for (let i = builder.breakStack.length - 1; i >= 0; i--) {
-          if (builder.breakStack[i].label === statement.label.name) { target = builder.breakStack[i]; break }
+          if (builder.breakStack[i].labels?.includes(statement.label.name)) { target = builder.breakStack[i]; break }
         }
         if (!target) throw new Error(`Unknown label: ${statement.label.name}`)
         builder.emit({ op: 'abrupt_jump', target: target.breakLabel, scopeDepth: target.scopeDepth })
       } else {
-        const breakable = builder.breakStack[builder.breakStack.length - 1]
+        const breakable = [...builder.breakStack].reverse().find((target) => !target.labelOnly)
         if (!breakable) throw new Error('break statement is only supported inside loops')
         builder.emit({ op: 'abrupt_jump', target: breakable.breakLabel, scopeDepth: breakable.scopeDepth })
       }
@@ -561,7 +558,7 @@ class ModuleLowerer {
       if (statement.label) {
         let target: LoopLabels | undefined
         for (let i = builder.loopStack.length - 1; i >= 0; i--) {
-          if (builder.loopStack[i].label === statement.label.name) { target = builder.loopStack[i]; break }
+          if (builder.loopStack[i].labels?.includes(statement.label.name)) { target = builder.loopStack[i]; break }
         }
         if (!target) throw new Error(`Unknown label: ${statement.label.name}`)
         builder.emit({ op: 'abrupt_jump', target: target.continueLabel, scopeDepth: target.scopeDepth })
@@ -664,7 +661,7 @@ class ModuleLowerer {
       for (let i = 0; i < statement.cases.length; i++) {
         const switchCase = statement.cases[i]
         if (!switchCase.test) continue
-        const caseValue = this.compileExpression(switchCase.test, builder, switchScope)
+        const caseValue = this.compileExpression(switchCase.test, builder, hasLexicalScope ? switchScope : scope)
         const matches = this.binary('===', discriminant, caseValue, builder)
         const nextTestLabel = builder.label('switch_next')
         builder.emit({ op: 'jump_if_false', condition: matches, target: nextTestLabel })
@@ -674,12 +671,11 @@ class ModuleLowerer {
       builder.emit({ op: 'jump', target: defaultLabel })
 
       // Emit case bodies
-      const switchLabel = this.pendingLabel; this.pendingLabel = undefined
-      builder.breakStack.push({ breakLabel: cleanupLabel, label: switchLabel, scopeDepth: (hasLexicalScope ? switchScope : scope).runtimeDepth - builder.rootScope.runtimeDepth })
+      builder.breakStack.push({ breakLabel: cleanupLabel, labels: statementLabels, scopeDepth: (hasLexicalScope ? switchScope : scope).runtimeDepth - builder.rootScope.runtimeDepth })
       for (let i = 0; i < statement.cases.length; i++) {
         builder.emit({ op: 'label', name: caseLabels[i] })
         for (const consequent of statement.cases[i].consequent) {
-          this.compileStatement(consequent, builder, switchScope)
+          this.compileStatement(consequent, builder, hasLexicalScope ? switchScope : scope)
         }
       }
       builder.breakStack.pop()
@@ -693,17 +689,20 @@ class ModuleLowerer {
     }
 
     if (t.isLabeledStatement(statement)) {
-      const labelName = statement.label.name
-      if (t.isBlockStatement(statement.body)) {
+      const labels: string[] = []
+      let body: t.Statement = statement
+      while (t.isLabeledStatement(body)) {
+        labels.push(body.label.name)
+        body = body.body
+      }
+      if (t.isLoop(body) || t.isSwitchStatement(body)) {
+        this.compileStatement(body, builder, scope, labels)
+      } else {
         const endLabel = builder.label('labeled_end')
-        builder.breakStack.push({ breakLabel: endLabel, label: labelName, scopeDepth: scope.runtimeDepth - builder.rootScope.runtimeDepth })
-        this.compileStatement(statement.body, builder, scope)
+        builder.breakStack.push({ labelOnly: true, breakLabel: endLabel, labels, scopeDepth: scope.runtimeDepth - builder.rootScope.runtimeDepth })
+        this.compileStatement(body, builder, scope)
         builder.breakStack.pop()
         builder.emit({ op: 'label', name: endLabel })
-      } else {
-        this.pendingLabel = labelName
-        this.compileStatement(statement.body, builder, scope)
-        this.pendingLabel = undefined
       }
       return
     }
