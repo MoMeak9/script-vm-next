@@ -93,7 +93,7 @@ export function normalizeFunctionParameters(path: NodePath<t.Function>): void {
         }
       },
     })
-    if (parameterNames.has(name) && !binding.function) {
+    if ((parameterNames.has(name) || name === 'arguments' && !t.isArrowFunctionExpression(node)) && !binding.function) {
       bodyCopies.push(t.variableDeclaration('var', [
         t.variableDeclarator(t.cloneNode(internal), t.identifier(name)),
       ]))
@@ -134,7 +134,7 @@ export function normalizeFunctionParameters(path: NodePath<t.Function>): void {
   const boundary = t.emptyStatement()
   boundary.extra = { vmParameterPreludeEnd: true }
   node.params = rawParams
-  node.extra = { ...node.extra, vmFunctionLength: length }
+  node.extra = { ...node.extra, vmFunctionLength: length, vmNonSimpleParameters: true }
   body.body = [...prelude, boundary, ...bodyCopies, ...body.body]
   path.scope.crawl()
 }
