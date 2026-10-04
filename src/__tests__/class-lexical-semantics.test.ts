@@ -1,0 +1,276 @@
+import { runInNewContext } from 'node:vm'
+import { describe, expect, it } from 'vitest'
+import { compileSource } from '../core'
+import { expectEquivalent } from './differential'
+
+describe('class lexical evaluation and constructor inheritance', () => {
+  it.each(['', 'constructor(value) { super(value); }', 'constructor(value) { (() => super(value))(); }'])(
+    'resolves the current superclass for %s', constructor => {
+      expectEquivalent(`
+        class A { constructor(value) { this.value = 'A' + value; } }
+        class B { constructor(value) { this.value = 'B' + value; this.target = new.target.name; } }
+        class C extends A { ${constructor} }
+        const before = new C(1);
+        Object.setPrototypeOf(C, B);
+        const after = new C(2);
+        globalThis.__result = [before.value, after.value, after.target, after instanceof C,
+          after instanceof A, after instanceof B, Object.getPrototypeOf(C.prototype) === A.prototype];
+      `)
+    }
+  )
+
+  it('preserves a further subclass and Reflect.construct new.target after reparenting', () => {
+    expectEquivalent(`
+      class A {} class B { constructor() { this.target = new.target; } }
+      class C extends A { constructor() { super(); } } class D extends C {}
+      Object.setPrototypeOf(C, B);
+      const d = new D(); const alternate = Reflect.construct(C, [], D);
+      globalThis.__result = [d.target === D, d instanceof D, alternate.target === D, alternate instanceof C];
+    `)
+  })
+
+  it.each(['Array', 'Map', 'Error'])( 'can dynamically inherit from the built-in %s', builtin => {
+    const argumentsSource = builtin === 'Map' ? "[['key', 7]]" : builtin === 'Array' ? '1, 2, 3' : "'message'"
+    const observation = builtin === 'Map' ? "Map.prototype.get.call(value, 'key')"
+      : builtin === 'Array' ? '[Array.isArray(value), value.length, value[2]]' : 'value.message'
+    expectEquivalent(`
+      class Base {} class Derived extends Base {}
+      Object.setPrototypeOf(Derived, ${builtin});
+      const value = new Derived(${argumentsSource});
+      globalThis.__result = [${observation}, value instanceof Derived, Object.getPrototypeOf(value) === Derived.prototype];
+    `)
+  })
+
+  it('uses a proxy replacement constructor without reading its prototype during super()', () => {
+    expectEquivalent(`
+      const log = []; class A {} class B {}
+      const replacement = new Proxy(B, {
+        get(target, key, receiver) { log.push('get:' + String(key)); return Reflect.get(target, key, receiver); },
+        construct(target, args, newTarget) { log.push([args[0], newTarget.name]); return { replacement: true }; }
+      });
+      class C extends A { constructor() { super('value'); } }
+      Object.setPrototypeOf(C, replacement);
+      globalThis.__result = [new C().replacement, log];
+    `)
+  })
+
+  it.each(['null', '{}', '(() => {})'])( 'rejects a nonconstructor superclass %s after evaluating arguments', replacement => {
+    expectEquivalent(`
+      const log = []; class A {} class B extends A { constructor() { super(log.push('argument')); } }
+      Object.setPrototypeOf(B, ${replacement});
+      try { new B(); } catch (e) { log.push(e.name); }
+      globalThis.__result = log;
+    `)
+  })
+
+  it('evaluates computed keys with the surrounding receiver and arguments binding', () => {
+    expectEquivalent(`
+      function make(first) {
+        return class {
+          [this.prefix + arguments[0]]() { return 'instance'; }
+          static [this.prefix + first]() { return 'static'; }
+        };
+      }
+      const C = make.call({ prefix: 'key:' }, 'original');
+      globalThis.__result = [new C()['key:original'](), C['key:original']()];
+    `)
+  })
+
+  it('captures this, arguments and new.target through an arrow returning a class', () => {
+    expectEquivalent(`
+      function factory(key) {
+        return (() => class { [this.prefix + arguments[0] + (new.target ? ':new' : ':call')]() { return 5; } })();
+      }
+      factory.prototype.prefix = 'prototype:';
+      const A = factory.call({ prefix: 'receiver:' }, 'value'); const B = new factory('value');
+      globalThis.__result = [new A()['receiver:value:call'](), new B()['prototype:value:new']()];
+    `)
+  })
+
+  it('preserves new.target in computed names and heritage', () => {
+    expectEquivalent(`
+      function factory() {
+        return class extends (new.target ? Array : Object) {
+          [new.target ? 'constructed' : 'called']() { return new.target; }
+          static [new.target ? 'factoryConstructed' : 'factoryCalled']() {}
+        };
+      }
+      const A = factory(); const B = new factory();
+      globalThis.__result = [new A().called(), typeof B.prototype.constructed, typeof B.factoryConstructed,
+        Array.isArray(new B()), Object.getPrototypeOf(A) === Object];
+    `)
+  })
+
+  it('uses outer class super in nested class keys and heritage, preserving the receiver', () => {
+    expectEquivalent(`
+      class Base {
+        get key() { return this.prefix + ':key'; }
+        get parent() { return Array; }
+        static get key() { return this.prefix + ':static'; }
+      }
+      class Outer extends Base {
+        constructor() { super(); this.prefix = 'outer'; }
+        make() { return class Inner extends super.parent { [super.key]() { return 3; } }; }
+        static make() { return class { [super.key]() { return 5; } }; }
+      }
+      Outer.prefix = 'Outer';
+      const A = new Outer().make(); const B = Outer.make();
+      globalThis.__result = [new A()['outer:key'](), Array.isArray(new A()), new B()['Outer:static']()];
+    `)
+  })
+
+  it('keeps inner class method super distinct from lexical super in its keys', () => {
+    expectEquivalent(`
+      class A { get key() { return 'method'; } run() { return 'outer'; } }
+      class B { run() { return 'inner'; } }
+      class Outer extends A {
+        make() { return class Inner extends B { [super.key]() { return super.run(); } }; }
+      }
+      const Inner = new Outer().make(); globalThis.__result = new Inner().method();
+    `)
+  })
+
+  it('checks derived this when a nested class key actually executes', () => {
+    expectEquivalent(`
+      class A { constructor() { this.key = 'ready'; } }
+      class B extends A {
+        constructor() {
+          const make = () => class { [this.key]() { return 8; } };
+          super(); const C = make(); this.result = new C().ready();
+        }
+      }
+      globalThis.__result = new B().result;
+    `)
+  })
+
+  it('throws for derived this in a computed key before super()', () => {
+    expectEquivalent(`class A {} class B extends A { constructor() { class C { [this.key]() {} } super(); } } new B();`)
+  })
+
+  it('evaluates keys and coercions in source order after heritage', () => {
+    expectEquivalent(`
+      const log = [];
+      const key = { [Symbol.toPrimitive](hint) { log.push(hint); return 'value'; } };
+      function parent() { log.push('heritage'); return Object; }
+      class C extends parent() {
+        [(log.push('first'), key)]() { return 1; }
+        static [(log.push('second'), 'static')]() { return 2; }
+        [(log.push('third'), 'last')]() { return 3; }
+      }
+      globalThis.__result = [log, new C().value(), C.static(), new C().last()];
+    `)
+  })
+
+  it('stops key evaluation when a prior key conversion throws', () => {
+    expectEquivalent(`
+      const log = []; const key = { toString() { log.push('coerce'); throw new RangeError(); } };
+      try { class C { [key]() {} [(log.push('unreachable'), 'later')]() {} } }
+      catch (e) { log.push(e.name); }
+      globalThis.__result = log;
+    `)
+  })
+
+  it('keeps the inner class name uninitialized during heritage evaluation', () => {
+    expectEquivalent(`
+      const log = []; let C = Object;
+      try { const Value = class C extends C {}; } catch (e) { log.push(e.name); }
+      globalThis.__result = log;
+    `)
+  })
+
+  it('initializes closures over the inner name after computed keys complete', () => {
+    expectEquivalent(`
+      let read; const C = class Inner { [(read = () => Inner, 'key')]() {} self() { return Inner; } };
+      globalThis.__result = [read() === C, new C().self() === C];
+    `)
+  })
+
+  it('keeps separately evaluated classes and their super homes independent', () => {
+    expectEquivalent(`
+      class A { run() { return this.value; } }
+      const values = [];
+      for (let i = 0; i < 3; i++) {
+        values.push(class extends A { constructor() { super(); this.value = i; } run() { return super.run(); } });
+      }
+      globalThis.__result = values.map(C => new C().run());
+    `)
+  })
+
+  it('supports suspension and resume in class computed keys without losing lexical scope', () => {
+    expectEquivalent(`
+      function* make() {
+        return class Named extends (yield 'heritage') { [yield 'key']() { return Named.name; } };
+      }
+      const iterator = make(); const log = [iterator.next().value, iterator.next(Object).value];
+      const C = iterator.next('method').value;
+      globalThis.__result = [log, new C().method()];
+    `)
+  })
+
+  it('unwinds the class scope when a suspended definition is externally returned', () => {
+    expectEquivalent(`
+      function* make() {
+        try { class C { [yield 'key']() {} } }
+        finally { yield typeof C; }
+      }
+      const iterator = make();
+      globalThis.__result = [iterator.next(), iterator.return('cancelled'), iterator.next()];
+    `)
+  })
+  it('infers names for declarations, assignments and binding defaults', () => {
+    expectEquivalent(`
+      const Assigned = class {}; let Later; Later = class {};
+      const [ArrayDefault = class {}] = []; const { value: ObjectDefault = class {} } = {};
+      let AssignmentDefault; [AssignmentDefault = class {}] = [];
+      function read(Parameter = class {}) { return Parameter.name; }
+      const Named = class Explicit {}; const Empty = [class {}][0];
+      globalThis.__result = [Assigned.name, Later.name, ArrayDefault.name, ObjectDefault.name,
+        AssignmentDefault.name, read(), Named.name, Empty.name];
+    `)
+  })
+
+  it('names object property classes using string, number and symbol keys', () => {
+    expectEquivalent(`
+      let coercions = 0; const key = { toString() { coercions++; return 'computed'; } };
+      const symbol = Symbol('description'); const anonymous = Symbol();
+      const values = { plain: class {}, 'quoted': class {}, 42: class {},
+        [key]: class {}, [symbol]: class {}, [anonymous]: class {} };
+      globalThis.__result = [values.plain.name, values.quoted.name, values[42].name,
+        values.computed.name, values[symbol].name, values[anonymous].name, coercions];
+    `)
+  })
+
+  it('sets inferred names before static initialization and lets a static name member override', () => {
+    const source = `
+      const key = 'computed';
+      const values = { [key]: class { static observed = this.name; },
+        value: class { static name() { return 7; } },
+        [Symbol.for('other')]: class { static name() { return 8; } } };
+      globalThis.__result = [values.computed.observed, values.value.name(), values[Symbol.for('other')].name()];
+    `
+    // NamedEvaluation passes the property key to ClassDefinitionEvaluation,
+    // which names the constructor before evaluating its static members.
+    // V8 incorrectly overwrites a computed property's static name method.
+    // https://tc39.es/ecma262/#sec-runtime-semantics-classdefinitionevaluation
+    const sandbox: { __result?: unknown } = {}
+    runInNewContext(compileSource(source).code, sandbox, { timeout: 1000 })
+    expect(sandbox.__result).toEqual(['computed', 7, 8])
+  })
+
+  it('does not introduce a lexical self binding for inferred class names', () => {
+    expectEquivalent(`
+      let Value = class { read() { return Value; } };
+      const instance = new Value(); Value = 7;
+      globalThis.__result = instance.read();
+    `)
+  })
+
+  it('preserves class name descriptors and explicitly named class values', () => {
+    expectEquivalent(`
+      const values = { ['inferred']: class Explicit {} };
+      const Assigned = class {}; const descriptor = Object.getOwnPropertyDescriptor(Assigned, 'name');
+      globalThis.__result = [values.inferred.name, descriptor.value, descriptor.writable,
+        descriptor.enumerable, descriptor.configurable];
+    `)
+  })
+})

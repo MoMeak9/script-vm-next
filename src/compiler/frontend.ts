@@ -78,14 +78,36 @@ function transformSuperCalls(
     Function(path) {
       if (path.node !== root && !path.isArrowFunctionExpression()) path.skip()
     },
-    Class(path) { path.skip() },
+    Class(path) {
+      // Heritage and computed keys belong to the enclosing lexical context;
+      // method bodies and field initializers belong to the nested class.
+      const expressions: { get(): t.Expression; set(value: t.Expression): void }[] = []
+      if (path.node.superClass) expressions.push({
+        get: () => path.node.superClass as t.Expression,
+        set: value => { path.node.superClass = value },
+      })
+      for (const member of path.node.body.body) {
+        if ('computed' in member && member.computed && 'key' in member) expressions.push({
+          get: () => member.key as t.Expression,
+          set: value => { member.key = value },
+        })
+      }
+      for (const expression of expressions) {
+        const statement = t.expressionStatement(expression.get())
+        const statements = [statement]
+        transformSuperCalls(statements, classId, isStatic, derivedConstructor)
+        expression.set((statements[0] as t.ExpressionStatement).expression)
+      }
+      path.skip()
+    },
     CallExpression: { exit(path) {
       const callee = path.node.callee
       if (t.isSuper(callee)) {
         path.replaceWith(
           t.callExpression(classLocal('initThis'), [t.callExpression(
             t.memberExpression(classIntrinsic('Reflect'), t.identifier('construct')),
-            [classLocal('super'), buildConcatArgs(path.node.arguments as (t.Expression | t.SpreadElement)[]),
+            [t.callExpression(t.memberExpression(classIntrinsic('Object'), t.identifier('getPrototypeOf')), [t.cloneNode(classId)]),
+              buildConcatArgs(path.node.arguments as (t.Expression | t.SpreadElement)[]),
               t.metaProperty(t.identifier('new'), t.identifier('target'))]
           )])
         )
@@ -428,7 +450,7 @@ function transformPrivateBody(bodyStatements: t.Statement[], descriptors: Map<st
   bodyStatements.push(...transformed)
 }
 
-function buildClassIife(node: t.ClassDeclaration | t.ClassExpression, classId: t.Identifier): t.Expression {
+function buildClassEvaluation(node: t.ClassDeclaration | t.ClassExpression, classId: t.Identifier, namespace: string): t.Expression {
   const sourceClassId = classId
   classId = classLocal('constructor')
   const superClass = node.superClass
@@ -584,7 +606,8 @@ function buildClassIife(node: t.ClassDeclaration | t.ClassExpression, classId: t
       t.expressionStatement(
         t.callExpression(classLocal('initThis'), [t.callExpression(
           t.memberExpression(classIntrinsic('Reflect'), t.identifier('construct')),
-          [classLocal('super'), t.identifier('arguments'), t.metaProperty(t.identifier('new'), t.identifier('target'))]
+          [t.callExpression(t.memberExpression(classIntrinsic('Object'), t.identifier('getPrototypeOf')), [t.cloneNode(classId)]),
+            t.identifier('arguments'), t.metaProperty(t.identifier('new'), t.identifier('target'))]
         )])
       ),
     ]
@@ -711,6 +734,27 @@ function buildClassIife(node: t.ClassDeclaration | t.ClassExpression, classId: t
   }
   statements.push(constructor)
 
+  if (node.extra?.vmClassNameExpression) {
+    const key = node.extra.vmClassNameExpression as t.Expression
+    const description = t.memberExpression(t.cloneNode(key), t.identifier('description'))
+    const name = t.conditionalExpression(
+      t.binaryExpression('===', t.unaryExpression('typeof', t.cloneNode(key)), t.stringLiteral('symbol')),
+      t.conditionalExpression(
+        t.binaryExpression('===', description, t.unaryExpression('void', t.numericLiteral(0))),
+        t.stringLiteral(''),
+        t.binaryExpression('+', t.binaryExpression('+', t.stringLiteral('['), t.cloneNode(description)), t.stringLiteral(']'))
+      ),
+      t.cloneNode(key)
+    )
+    statements.push(t.expressionStatement(t.callExpression(
+      t.memberExpression(classIntrinsic('Object'), t.identifier('defineProperty')),
+      [classId, t.stringLiteral('name'), t.objectExpression([
+        t.objectProperty(t.identifier('value'), name),
+        t.objectProperty(t.identifier('configurable'), t.booleanLiteral(true)),
+      ])]
+    )))
+  }
+
   if (superClass) {
     // A proxy preserves IsConstructor while its construct trap avoids executing
     // the superclass or reading its prototype during this validation step.
@@ -801,12 +845,38 @@ function buildClassIife(node: t.ClassDeclaration | t.ClassExpression, classId: t
     )))
   }
 
-  statements.push(t.returnStatement(classId))
+  statements.push(t.expressionStatement(classId))
 
-  return t.callExpression(
-    t.functionExpression(null, superParam ? [superParam] : [], strictClassBody(statements)),
-    superClass ? [superClass as t.Expression] : []
-  )
+  // A class definition creates a lexical environment, not a function call.
+  // Keep keys/heritage in the caller's frame (including yield, arguments and
+  // new.target), while every evaluation gets its own helper/name bindings.
+  const declarations: t.Statement[] = []
+  const evaluation: t.Statement[] = []
+  if (superParam) evaluation.push(t.variableDeclaration('let', [t.variableDeclarator(superParam, superClass)]))
+  for (const statement of statements) {
+    if (t.isFunctionDeclaration(statement)) {
+      const fn = t.functionExpression(null, statement.params, statement.body, statement.generator, statement.async)
+      fn.extra = statement.extra
+      declarations.push(t.variableDeclaration('const', [t.variableDeclarator(statement.id!, fn)]))
+    } else {
+      if (t.isVariableDeclaration(statement) && statement.kind === 'var') statement.kind = 'let'
+      evaluation.push(statement)
+    }
+  }
+  const block = t.blockStatement([...declarations, ...evaluation])
+  block.extra = { vmClassEvaluation: true }
+  const expression = t.doExpression(block)
+  const ast = t.file(t.program([t.expressionStatement(expression)]))
+  traverse(ast, {
+    Identifier(path) {
+      // Already namespaced references belong to an outer class. In particular,
+      // lexical super in a nested class key must retain that outer home object.
+      if (/^@script-vm\/class\/(?!scope-)/.test(path.node.name)) {
+        path.node.name = path.node.name.replace('@script-vm/class/', `@script-vm/class/scope-${namespace}/`)
+      }
+    },
+  })
+  return expression
 }
 
 function iteratorIntrinsic(name: string, args: t.Expression[]): t.CallExpression {
@@ -1264,6 +1334,20 @@ export function normalizeAst(file: t.File): t.File {
   traverse(file, { Function: normalizeFunctionParameters })
   traverse(file, { Identifier(path) { reservedNames.add(path.node.name) } })
 
+  // Computed property NamedEvaluation receives the already coerced key. Set
+  // the class name during its definition so static members can observe or
+  // replace it; naming the finished value would be too late.
+  traverse(file, {
+    ObjectProperty(path) {
+      const { node } = path
+      if (!node.computed || !t.isClassExpression(node.value) || node.value.id) return
+      const key = t.identifier(nextId())
+      node.key = t.assignmentExpression('=', t.cloneNode(key), iteratorIntrinsic('PropertyKey', [node.key as t.Expression]))
+      node.value.extra = { ...node.value.extra, vmClassNameExpression: key }
+      declareTempBindings(path, [key])
+    },
+  })
+
   traverse(file, {
     BigIntLiteral(path: any) {
       // Desugar 123n → BigInt("123") to avoid constant pool JSON serialization issues
@@ -1561,7 +1645,26 @@ export function normalizeAst(file: t.File): t.File {
     },
   })
 
-  // Pass 2: Normalize arrows, classes, catch clause renaming
+  // Lower classes before arrows so lexical captures also visit computed class
+  // keys. Method bodies remain ordinary function boundaries in this pass.
+  traverse(file, {
+    ClassDeclaration(path) {
+      const node = path.node
+      const className = node.id ? node.id.name : '_AnonymousClass'
+      const classId = t.identifier(className)
+      path.replaceWith(
+        t.variableDeclaration('let', [t.variableDeclarator(classId, buildClassEvaluation(node, classId, nextId()))])
+      )
+    },
+    ClassExpression(path) {
+      const node = path.node
+      const className = node.id ? node.id.name : '_AnonymousClass'
+      const classId = t.identifier(className)
+      path.replaceWith(buildClassEvaluation(node, classId, nextId()))
+    },
+  })
+
+  // Normalize arrows and catch clause bindings after class lexical evaluation.
   const arrowCaptures = new WeakMap<t.Node, { thisId?: t.Identifier; argsId?: t.Identifier; newTargetId?: t.Identifier }>()
 
   const skipNonArrowVisitors = {
@@ -1707,20 +1810,7 @@ export function normalizeAst(file: t.File): t.File {
         path.scope.rename(path.node.param.name, nextName)
       }
     },
-    ClassDeclaration(path) {
-      const node = path.node
-      const className = node.id ? node.id.name : '_AnonymousClass'
-      const classId = t.identifier(className)
-      path.replaceWith(
-        t.variableDeclaration('let', [t.variableDeclarator(classId, buildClassIife(node, classId))])
-      )
-    },
-    ClassExpression(path) {
-      const node = path.node
-      const className = node.id ? node.id.name : '_AnonymousClass'
-      const classId = t.identifier(className)
-      path.replaceWith(buildClassIife(node, classId))
-    },
+
   })
 
   return file
