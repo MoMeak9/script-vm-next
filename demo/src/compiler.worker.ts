@@ -15,6 +15,7 @@ self.addEventListener('message', (event: MessageEvent) => {
       filename: 'playground.js',
       format: 'iife',
       debug: Boolean(debug),
+      runtime: 'auto',
     })
     self.postMessage({
       id,
@@ -24,6 +25,10 @@ self.addEventListener('message', (event: MessageEvent) => {
         stats: {
           bytecodeWords: result.artifact.bytecode.length,
           functionCount: result.artifact.functions.length,
+          runtime: result.artifact.runtimeRequirements && {
+            instructionCount: result.artifact.runtimeRequirements.opcodes.length,
+            executionModes: result.artifact.runtimeRequirements.functionKinds,
+          },
         },
       },
     })

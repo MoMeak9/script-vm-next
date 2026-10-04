@@ -67,6 +67,10 @@
             <div class="metric"><span class="metric-icon" aria-hidden="true">▥</span><div><span class="metric-label">字节码长度 <span class="metric-unit">/ words</span></span><span class="metric-value" id="metric-bytecode">—</span></div></div>
             <div class="metric"><span class="metric-icon" aria-hidden="true">ƒ</span><div><span class="metric-label">函数数量</span><span class="metric-value" id="metric-functions">—</span></div></div>
           </div>
+          <details id="runtime-details" class="runtime-details" hidden>
+            <summary>运行时已按需组装<span id="runtime-summary"></span></summary>
+            <p>执行方式：<span id="runtime-modes"></span>。编译器自动保留源码及其函数所需的能力；上方产物大小包含字节码和运行时。</p>
+          </details>
         </section>
 
         <section class="console-panel" aria-labelledby="console-heading">

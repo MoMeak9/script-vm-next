@@ -13,6 +13,7 @@ Choose a document by topic and language below. The project README is available i
 | [Project README](../README.md) | English | Installation, APIs, CLI, validation / 安装、API、CLI、验证 |
 | [项目 README](../README.zh-CN.md) | 简体中文 | 安装、API、CLI、验证 / Installation, APIs, CLI, validation |
 | [JavaScript compatibility / JavaScript 兼容性](compatibility.md) | English | Verified cases and remaining semantic boundaries / 已验证场景与剩余语义边界 |
+| [Runtime assembly / 运行时按需组装](runtime-assembly.md) | English | Compile-time interpreter selection, modes and limits / 编译期解释器裁剪、模式与边界 |
 | [Test262 baseline / Test262 基线](test262.md) | English | Pinned upstream tests, runner, scope and known exclusions / 固定上游版本、执行器、范围与已知排除项 |
 | [Browser playground / 浏览器演示页](playground.md) | English | Usage, execution isolation, Pages deployment / 使用、执行隔离、Pages 部署 |
 | [Release guide / 发布指南](releasing.md) | English | Package validation, license and npm publishing setup / 安装包验收、许可证与 npm 发布配置 |

@@ -1,7 +1,8 @@
 import { JS_PREAMBLE } from './constants'
 import { generateRuntimeSource } from './runtime-gen'
 import { serializeArtifact } from './artifact-serialization'
-import type { ProgramArtifact } from './types'
+import { analyzeRuntimeRequirements } from './runtime-requirements'
+import type { ProgramArtifact, RuntimeMode } from './types'
 
 function wrapAsESM(invocation: string, exportNames: string[]): string {
   const names = [...new Set(exportNames)]
@@ -31,8 +32,8 @@ function wrapAsCJS(invocation: string, exportNames: string[]): string {
   return lines.join('\n')
 }
 
-export function packArtifact(artifact: ProgramArtifact): string {
-  const runtime = generateRuntimeSource()
+export function packArtifact(artifact: ProgramArtifact, runtimeMode: RuntimeMode = 'auto'): string {
+  const runtime = generateRuntimeSource(artifact, runtimeMode)
   const metadata = serializeArtifact(artifact)
   // The private bridge exists only in this VM's global lookup. A Proxy keeps
   // ordinary global reads/writes on the host, without publishing the bridge or
@@ -59,7 +60,7 @@ var __vm_scope = new Proxy(__vm_global, { get: function(target, key) {
 __vm_global.require = typeof require !== 'undefined' ? require : __vm_global.require;
 __vm_global.module = typeof module !== 'undefined' ? module : __vm_global.module;
 __vm_global.exports = typeof exports !== 'undefined' ? exports : __vm_global.exports;
-__vm_global.__vm_import = function(s) { return import(s) };
+${analyzeRuntimeRequirements(artifact).needsDynamicImport ? '__vm_global.__vm_import = function(s) { return import(s) };' : ''}
 ${scope}
 ${runtime}
 return __scriptvmRun(${metadata}, __vm_scope);

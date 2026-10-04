@@ -7,7 +7,7 @@ export { compileSource, CompileError } from './core'
 export type { CompileOptions }
 export type {
   CompileSourceOptions, SourceCompileOptions, CompileErrorCode, CompileErrorDetails, CompileStage,
-  CompiledOutput, ProgramArtifact, FunctionMeta, ModuleFormat,
+  CompiledOutput, ProgramArtifact, FunctionMeta, ModuleFormat, RuntimeMode, RuntimeRequirements,
 } from './core'
 
 export function transform(inputPath: string, options?: CompileOptions): string {

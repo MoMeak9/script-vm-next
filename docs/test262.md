@@ -2,14 +2,23 @@
 
 This repository runs a **selected script-only baseline**, not the full Test262 suite. Passing this baseline does not establish complete ES2015 compatibility. The native-versus-VM regression tests, package consumers, and browser tests remain separate checks.
 
-The baseline contains **219 upstream files and 428 execution variants**. CI runs every selected variant on Node.js **20, 22, and 24**. There are **no allowed failures or skips**. A failed assertion, incorrect negative-test phase, timeout, integrity mismatch, or unsupported execution requirement fails the command.
+The baseline contains **219 upstream files and 428 execution variants**. CI runs every selected variant with both **`auto` and `full` runtime assembly**, for **856 VM executions per Node version**, on Node.js **20, 22, and 24**. There are **no allowed failures or skips**. A failed assertion, incorrect negative-test phase, timeout, integrity mismatch, or unsupported execution requirement fails the command.
 
 ```sh
 pnpm build
 pnpm test:test262
 ```
 
-`test:test262` first tests the runner's failure paths, then executes the corpus. The command uses local files only and never downloads tests. It writes detailed results, declared features, mode, failure engine, and revision to `artifacts/test262/report.json`; CI uploads a separate report for each Node version, including failed runs when a report was produced.
+`test:test262` first runs 16 tests of the runner and its failure paths, then executes the corpus in both runtime modes. The command uses local files only and never downloads tests. It writes detailed results, declared features, strict/sloppy mode, runtime mode, failure engine, and revision to `artifacts/test262/report.json`. The report includes both aggregate counts and a separate `runtimeSummaries` entry for each runtime; CI uploads a separate report for each Node version, including failed runs when a report was produced.
+
+For a focused local rerun after building:
+
+```sh
+node scripts/test262/run.mjs --runtime=auto
+node scripts/test262/run.mjs --runtime=full
+```
+
+Omitting the flag, or passing `--runtime=both`, selects both runtimes. Unknown or duplicate arguments fail instead of silently selecting a different mode.
 
 ## Provenance and integrity
 
@@ -56,15 +65,15 @@ The manifest records every full pending path in `selection.pendingSemanticFixes`
 ## Execution model
 
 1. Read frontmatter execution fields: `flags`, `includes`, `features`, and `negative.phase/type`. Descriptions and specification quotations are not executed. The parser accepts scalar execution values, inline lists, block lists, and the conventional negative-test mapping used by the pinned corpus; malformed or ambiguous execution metadata fails closed.
-2. Schedule sloppy/strict variants according to Test262 flags. `raw` uses the source without harness or an injected strict directive. Unsupported module/async/agent requirements are reported explicitly as skips and make the baseline command fail; they are never counted as passes. Feature labels are recorded, not used to silently suppress cases.
+2. Schedule sloppy/strict variants according to Test262 flags, once for each selected runtime mode. `raw` uses the source without harness or an injected strict directive. Unsupported module/async/agent requirements are reported explicitly as skips and make the baseline command fail; they are never counted as passes. Feature labels are recorded, not used to silently suppress cases.
 3. Load the unmodified official `sta.js`, `assert.js`, and requested harness includes into a fresh Node VM realm. Harness failures always fail the case and cannot satisfy runtime-negative expectations.
-4. Run the native source as an oracle/harness sanity check, then compile the **test program** through the built `compileSource` public API and execute the emitted VM program in another fresh realm. Harness helpers stay native, as they do in an ordinary Test262 host; the actual tested syntax runs through the compiler.
+4. Run the native source as an oracle/harness sanity check, then compile the **test program** through the built `compileSource` public API with the explicit selected `runtime` option and execute the emitted VM program in another fresh realm. Harness helpers stay native, as they do in an ordinary Test262 host; the actual tested syntax runs through the compiler.
 5. Parse/early negatives require a parse-stage `SYNTAX_ERROR` with the expected underlying constructor name. A later unsupported-feature/compiler error cannot pass as a parse negative. Runtime negatives require the exact expected exception constructor from the test realm; matching an error's text or `name` is insufficient. Invalid emitted JavaScript cannot satisfy a runtime-negative expectation.
 6. Enforce a one-second execution limit per script and a ten-second wall-clock deadline per variant, including compilation. Two reusable workers provide isolation from compiler stalls. Timed-out/crashed workers are terminated and replaced so the remaining results are still reported. Each variant gets fresh execution realms; no test globals are shared.
 
 Node VM contexts and workers are test isolation/resource controls, not a security sandbox for arbitrary untrusted tests. Only the reviewed, pinned upstream corpus is executed.
 
-The runner's own tests exercise assertion failure, false parse-negative matches, missing/wrong runtime exceptions, same-name fake errors, harness errors, invalid emitted syntax, strict modes, metadata conflicts, fixture tampering, missing includes, timeouts, worker crashes/reuse, realm separation, and honest result accounting.
+The runner's own tests exercise assertion failure, false parse-negative matches, missing/wrong runtime exceptions, same-name fake errors, harness errors, invalid emitted syntax, strict modes, explicit runtime selection/forwarding, metadata conflicts, fixture tampering, missing includes, timeouts, worker crashes/reuse, realm separation, and honest result accounting.
 
 ## Updating the corpus
 

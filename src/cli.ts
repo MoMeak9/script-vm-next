@@ -5,6 +5,7 @@ import compile from './compiler'
 import { CompileError } from './compiler/diagnostics'
 import { resolve } from 'node:path'
 import { VERSION } from './version'
+import type { RuntimeMode } from './compiler/types'
 
 const program = new Command()
 
@@ -16,6 +17,7 @@ interface CliOptions {
   bundle?: boolean
   external?: string
   debug?: boolean
+  runtime?: string
 }
 
 function runCompile(input: string, options: CliOptions) {
@@ -27,6 +29,7 @@ function runCompile(input: string, options: CliOptions) {
       bundle: options.bundle,
       external: options.external?.split(',').map(item => item.trim()).filter(Boolean),
       debug: Boolean(options.debug),
+      runtime: options.runtime as RuntimeMode,
     })
   } catch (error) {
     if (error instanceof CompileError) {
@@ -49,6 +52,7 @@ const registerCommand = (command: Command) =>
     .option('--no-bundle', 'Disable module bundling')
     .option('--external <modules>', 'Comma-separated external module names')
     .option('--debug', 'Emit debug information')
+    .option('--runtime <mode>', 'Interpreter assembly (auto|full)', 'auto')
     .action(runCompile)
 
 registerCommand(program)

@@ -36,7 +36,7 @@ jobs:
         run: pnpm install --frozen-lockfile --ignore-scripts --registry=https://registry.npmjs.org
       - name: Build and test
         run: pnpm test
-      - name: Run pinned ES2015 Test262 baseline
+      - name: Run pinned ES2015 Test262 baseline with auto and full runtimes
         run: pnpm test:test262
       - name: Save Test262 report
         if: always()
@@ -73,9 +73,9 @@ jobs:
         run: |
           pnpm lint
           pnpm typecheck
-      - name: Test compiler
-        run: pnpm test:unit
-      - name: Run pinned ES2015 Test262 baseline
+      - name: Test compiler with auto and full runtimes
+        run: pnpm test:unit:runtimes
+      - name: Run pinned ES2015 Test262 baseline with auto and full runtimes
         run: pnpm test:test262
       - name: Save Test262 report
         if: always()

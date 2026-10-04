@@ -94,13 +94,14 @@ try {
   await writeFile(path.join(consumer, 'input.js'), source)
   const smokeAssertions = `
     const source = ${JSON.stringify(source)};
-    for (const [name, api] of [['root', root], ['core', core]]) {
+    for (const [name, api] of [['root', root], ['core', core]]) for (const runtime of ['auto', 'full']) {
       assert.equal(typeof api.compileSource, 'function', name + ' compileSource');
       assert.equal(typeof api.CompileError, 'function', name + ' CompileError');
-      const output = api.compileSource(source, { format: 'iife', filename: 'consumer.js' });
+      const output = api.compileSource(source, { format: 'iife', filename: 'consumer.js', runtime });
       assert.equal(typeof output.code, 'string');
       assert.ok(Array.isArray(output.artifact.bytecode));
       assert.ok(output.artifact.bytecode.length > 0);
+      assert.equal(output.artifact.runtimeRequirements.version, 1);
       const context = {};
       runInNewContext(output.code, context, { timeout: 3000 });
       assert.equal(context.__packageResult, 42, name + ' compiled execution');
@@ -170,19 +171,24 @@ try {
   await run(process.execPath, ['static-consumer.mjs'])
 
   const typedAssertions = `
-    const options: CompileOptions = { format: 'iife' };
-    const sourceOptions: CompileSourceOptions = { format: 'iife', filename: 'consumer.js' };
+    const runtime: root.RuntimeMode = 'auto';
+    const fullRuntime: core.RuntimeMode = 'full';
+    const options: CompileOptions = { format: 'iife', runtime };
+    const sourceOptions: CompileSourceOptions = { format: 'iife', filename: 'consumer.js', runtime: fullRuntime };
     const fileResult: CompiledOutput = root.compile('input.js', null, options);
     const sourceResult: CompiledOutput = core.compileSource('1 + 2', sourceOptions);
     const code: string = root.transform('input.js', options);
     const sourceCode: string = sourceResult.code;
     const bytecode: number[] = sourceResult.artifact.bytecode;
+    const requirements: core.RuntimeRequirements | undefined = sourceResult.artifact.runtimeRequirements;
     const version: string = root.VERSION;
     const diagnostic: Error = new core.CompileError('message', { code: 'SYNTAX_ERROR', stage: 'parse' });
     // @ts-expect-error Output formats are checked, not any.
     root.compile('input.js', null, { format: 'invalid' });
     // @ts-expect-error Source input is a string.
     core.compileSource(42);
+    // @ts-expect-error Runtime selection is checked, not any.
+    core.compileSource('1', { runtime: 'unknown' });
     // @ts-expect-error Compiled output is typed, not any.
     const invalidCode: number = sourceResult.code;
   `

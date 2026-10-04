@@ -110,6 +110,11 @@ kbd { font-family: inherit; font-size: 8px; letter-spacing: .2px; color: #9ba4b6
 .metric-unit { font-family: var(--mono); font-size: 8px; }
 .metric-value { color: #4a5a79; font: 500 14px var(--mono); }
 .metric-value small { color: #99a4b8; font-size: 10px; margin-left: 4px; }
+.runtime-details { border-top: 1px solid var(--border); padding: 12px 21px; color: #738097; font-size: 10px; line-height: 1.8; }
+.runtime-details summary { cursor: pointer; color: #516180; }
+.runtime-details summary:focus-visible { outline: 2px solid var(--blue); outline-offset: 4px; }
+.runtime-details summary span { color: #738097; }
+.runtime-details p { margin: 8px 0 0; }
 .console-panel { margin-top: 19px; border: 1px solid #dfe5ef; background: #fff; border-radius: 9px; overflow: hidden; }
 .console-heading { height: 44px; padding: 0 19px; display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid #edf0f5; background: #fbfcff; }
 .console-heading > div { display: flex; align-items: center; gap: 9px; }

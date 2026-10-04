@@ -36,6 +36,16 @@ describe('compileSource', () => {
     expect(compileSource('var n = 1;', { debug: true }).artifact.debugInfo?.instructions.length).toBeGreaterThan(0)
   })
 
+  it('offers equivalent auto and full runtime modes through both source entrypoints', () => {
+    const source = '__result = 6 * 7;'
+    const automatic = compileSource(source, { runtime: 'auto' })
+    const full = nodeCompileSource(source, { runtime: 'full' })
+    expect(runIifeCode(automatic.code).__result).toBe(42)
+    expect(runIifeCode(full.code).__result).toBe(42)
+    expect(automatic.artifact).toEqual(full.artifact)
+    expect(automatic.code.length).toBeLessThan(full.code.length)
+  })
+
   it('accepts empty scripts and hashbangs', () => {
     expect(compileSource('').artifact.functions).toHaveLength(1)
     expect(runIifeCode(compileSource('#!/usr/bin/env node\n__result = 7;').code).__result).toBe(7)
@@ -88,6 +98,9 @@ describe('compileSource', () => {
     ['var n = 1;', [], 'INVALID_OPTION'],
     ['var n = 1;', { filename: 1 }, 'INVALID_OPTION'],
     ['var n = 1;', { debug: 'true' }, 'INVALID_OPTION'],
+    ['var n = 1;', { runtime: 'unknown' }, 'INVALID_OPTION'],
+    ['var n = 1;', { runtime: null }, 'INVALID_OPTION'],
+    ['var n = 1;', { runtime: true }, 'INVALID_OPTION'],
     ['var n = 1;', { format: 'esm' }, 'INVALID_FORMAT'],
     ['var n = 1;', { format: 'unknown' }, 'INVALID_FORMAT'],
   ])('rejects invalid API input %#', (source, options, code) => {
@@ -113,6 +126,30 @@ describe('compileSource', () => {
 })
 
 describe('Node file API compatibility', () => {
+  it('passes runtime mode through compile and transform without changing execution', () => {
+    const dir = makeTempDir('script-vm-next-core-runtime-')
+    const input = writeTempFile(dir, 'input.js', '__result = 6 * 7;')
+    const automatic = compile(input, null, { runtime: 'auto' })
+    const full = transform(input, { runtime: 'full' })
+    expect(automatic.code.length).toBeLessThan(full.length)
+    expect(runIifeCode(automatic.code).__result).toBe(42)
+    expect(runIifeCode(full).__result).toBe(42)
+    expect(fs.readdirSync(dir)).toEqual(['input.js'])
+  })
+
+  it.each(['invalid', null, true])('rejects invalid runtime mode before reading files: %s', runtime => {
+    const input = path.join(makeTempDir('script-vm-next-core-runtime-invalid-'), 'missing.js')
+    for (const execute of [
+      () => compile(input, null, { runtime: runtime as any }),
+      () => transform(input, { runtime: runtime as any }),
+    ]) {
+      expect(execute).toThrow(CompileError)
+      try { execute() } catch (error) {
+        expect(error).toMatchObject({ code: 'INVALID_OPTION', stage: 'input', filename: input })
+      }
+    }
+  })
+
   it('shares the source pipeline while preserving default paths and no-output transform', () => {
     const dir = makeTempDir('script-vm-next-core-node-')
     const source = '__result = 6 * 7;'

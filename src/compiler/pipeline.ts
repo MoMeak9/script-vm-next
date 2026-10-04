@@ -1,7 +1,7 @@
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 import { bundle, detectModuleFormat, hasCJSSyntax, hasModuleSyntax } from './bundler'
-import { compileProgram } from './core-pipeline'
+import { compileProgram, resolveRuntimeMode } from './core-pipeline'
 import { CompileError, compileStep } from './diagnostics'
 import type { CompiledOutput, CompileOptions, ModuleFormat, ProgramArtifact } from './types'
 
@@ -32,6 +32,7 @@ export default function compile(
   if (!options || typeof options !== 'object' || Array.isArray(options)) {
     throw new CompileError('Options must be an object.', { code: 'INVALID_OPTION', stage: 'input' })
   }
+  const runtime = resolveRuntimeMode(options.runtime, sourceFile)
   if (options.obfuscate) {
     throw new CompileError('obfuscate is reserved and is not implemented.', {
       code: 'UNSUPPORTED_FEATURE', stage: 'input', filename: sourceFile,
@@ -67,7 +68,7 @@ export default function compile(
   }
 
   const output = compileProgram(codeToCompile, {
-    filename: sourceFile, format, debug: options.debug,
+    filename: sourceFile, format, debug: options.debug, runtime,
     exportNames, exportsIdentifier, notifyIdentifier, hostImports, hostExports,
   })
 

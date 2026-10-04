@@ -20,6 +20,8 @@ function serializeConstant(value: unknown): string {
  * keep structural metadata in JSON and never interpret string constants as code.
  */
 export function serializeArtifact(artifact: ProgramArtifact): string {
-  const { constantPool, ...metadata } = artifact
+  // The manifest is a compiler/reporting artifact. The selected interpreter does
+  // not need to carry its own capability list into every generated program.
+  const { constantPool, runtimeRequirements: _requirements, ...metadata } = artifact
   return `${JSON.stringify(metadata).slice(0, -1)},"constantPool":[${constantPool.map(serializeConstant).join(',')}]}`
 }

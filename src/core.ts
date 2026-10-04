@@ -1,13 +1,13 @@
 import traverseModule from '@babel/traverse'
 import type * as t from '@babel/types'
-import { compileProgram } from './compiler/core-pipeline'
+import { compileProgram, resolveRuntimeMode } from './compiler/core-pipeline'
 import { CompileError, compileStep } from './compiler/diagnostics'
 import { parseSource } from './compiler/frontend'
-import type { CompiledOutput } from './compiler/types'
+import type { CompiledOutput, RuntimeMode } from './compiler/types'
 
 export { CompileError } from './compiler/diagnostics'
 export type { CompileErrorCode, CompileErrorDetails, CompileStage } from './compiler/diagnostics'
-export type { CompiledOutput, ProgramArtifact, FunctionMeta, ModuleFormat } from './compiler/types'
+export type { CompiledOutput, ProgramArtifact, FunctionMeta, ModuleFormat, RuntimeMode, RuntimeRequirements } from './compiler/types'
 
 const traverse: typeof traverseModule = typeof traverseModule === 'function'
   ? traverseModule
@@ -17,6 +17,8 @@ export interface CompileSourceOptions {
   /** Label used in diagnostics. No file is read or written. */
   filename?: string
   debug?: boolean
+  /** Assemble the required interpreter by default; use full for diagnostics. */
+  runtime?: RuntimeMode
   /** The source API accepts a standalone script and emits an IIFE. */
   format?: 'iife'
 }
@@ -70,6 +72,7 @@ export function compileSource(source: string, options: CompileSourceOptions = {}
     throw new CompileError('filename must be a string.', { code: 'INVALID_OPTION', stage: 'input' })
   }
   const filename = options.filename ?? 'source.js'
+  const runtime = resolveRuntimeMode(options.runtime, filename)
   if (options.format !== undefined && options.format !== 'iife') {
     throw new CompileError('compileSource only supports the iife format.', {
       code: 'INVALID_FORMAT', stage: 'input', filename,
@@ -85,5 +88,5 @@ export function compileSource(source: string, options: CompileSourceOptions = {}
   const script = file.program.sourceType === 'module'
     ? compileStep('parse', filename, () => parseSource(source, 'script'))
     : file
-  return compileProgram(script, { filename, format: 'iife', debug: options.debug })
+  return compileProgram(script, { filename, format: 'iife', debug: options.debug, runtime })
 }

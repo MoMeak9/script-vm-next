@@ -4,8 +4,22 @@ import { iteratorRuntimeSource } from './iterator-runtime'
 import { classRuntimeSource } from './class-runtime'
 import { templateRuntimeSource } from './template-runtime'
 import { objectRuntimeSource } from './object-runtime'
+import { analyzeRuntimeRequirements } from './runtime-requirements'
+import { assembleRuntimeSource } from './runtime-assembly'
+import type { ProgramArtifact, RuntimeMode } from './types'
 
-export function generateRuntimeSource(): string {
+/** Keep one semantic implementation; specialize only at compile time. */
+export function generateRuntimeSource(artifact?: ProgramArtifact, mode: RuntimeMode = artifact ? 'auto' : 'full'): string {
+  if (mode !== 'auto' && mode !== 'full') throw new Error(`Unknown runtime mode: ${String(mode)}`)
+  const source = fullRuntimeSource ??= generateFullRuntimeSource()
+  if (!artifact) return source
+  const requirements = analyzeRuntimeRequirements(artifact)
+  return mode === 'full' ? source : assembleRuntimeSource(source, requirements)
+}
+
+let fullRuntimeSource: string | undefined
+
+function generateFullRuntimeSource(): string {
   return `
 function __scriptvmRun(metadata, globalObject) {
   var OPCODES = ${JSON.stringify(OPCODES)};

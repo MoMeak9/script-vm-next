@@ -4,7 +4,7 @@ function errorText(error) {
   return `${error?.name ?? 'Error'}: ${error?.message ?? error}`
 }
 
-export function executeVariant({ source, filename, metadata, mode, harness, compile, timeoutMs = 1000 }) {
+export function executeVariant({ source, filename, metadata, mode, harness, compile, runtime = 'auto', timeoutMs = 1000 }) {
   const input = mode === 'strict' ? `"use strict";\n${source}` : source
   const negative = metadata.negative
   const parseNegative = negative && ['parse', 'early'].includes(negative.phase)
@@ -14,7 +14,7 @@ export function executeVariant({ source, filename, metadata, mode, harness, comp
     let code = input
     let caught
     try {
-      code = engine === 'vm' ? compile(input, { filename }).code : new vm.Script(input, { filename })
+      code = engine === 'vm' ? compile(input, { filename, runtime }).code : new vm.Script(input, { filename })
     } catch (error) { caught = error }
     if (parseNegative) {
       const correct = engine === 'native'

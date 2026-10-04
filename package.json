@@ -11,8 +11,9 @@
   "scripts": {
     "build": "node scripts/build.mjs",
     "dev": "ts-node src/cli.ts",
-    "test": "pnpm build && vitest run",
+    "test": "pnpm build && pnpm test:unit:runtimes",
     "test:unit": "vitest run",
+    "test:unit:runtimes": "node scripts/test-runtime-modes.mjs",
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p demo/tsconfig.json",
     "lint": "eslint src demo/src scripts *.config.*",
@@ -31,7 +32,8 @@
     "README.md",
     "README.zh-CN.md",
     "LICENSE",
-    "docs/compatibility.md"
+    "docs/compatibility.md",
+    "docs/runtime-assembly.md"
   ],
   "engines": {
     "node": ">=20"

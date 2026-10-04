@@ -1,6 +1,7 @@
 import { BINARY_OPS, OPCODES, UNARY_OPS } from '../runtime/opcodes'
 import type { ProgramArtifact } from './types'
 import type { AllocationResult } from './regalloc'
+import { analyzeRuntimeRequirements } from './runtime-requirements'
 
 class ConstantPool {
   values: any[] = []
@@ -208,7 +209,7 @@ export function emitBytecode(program: AllocationResult, format: ProgramArtifact[
     functions[fn.id].end = bytecode.length
   }
 
-  return {
+  const artifact: ProgramArtifact = {
     format,
     bytecode,
     constantPool: pool.values,
@@ -217,4 +218,6 @@ export function emitBytecode(program: AllocationResult, format: ProgramArtifact[
     exportNames,
     debugInfo: debug ? { instructions: debugInstructions } : undefined,
   }
+  artifact.runtimeRequirements = analyzeRuntimeRequirements(artifact)
+  return artifact
 }

@@ -15,6 +15,8 @@ These categories can overlap: a feature can have useful test coverage and still 
 
 Pass ordinary JavaScript to the existing API or CLI. The compiler lowers supported constructs and embeds its runtime helpers automatically; consumers do not need to rewrite source, configure Babel, or add a transpilation build step. Helpers use private bindings so user variables named `Object`, `Array`, or compiler-like temporary names do not replace them. This preserves the tested behavior while keeping user program bodies in the VM; it does not fall back to executing original source with `eval`.
 
+The default `runtime: 'auto'` assembles only the interpreter instructions and helper dependencies required by all compiled functions. `runtime: 'full'` retains the complete interpreter for diagnosis. Both modes use the same bytecode; selecting the full runtime does not add language support or remove any limits documented here. See [runtime assembly](runtime-assembly.md).
+
 Unsupported dependency-linking cases still produce a compiler error. Host built-ins remain a runtime requirement, and uncovered semantics are not a promise of compatibility. The known limits below belong to this library's implementation backlog.
 
 ## ES2015 and earlier

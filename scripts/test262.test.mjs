@@ -9,7 +9,7 @@ import { pathToFileURL } from 'node:url'
 import { readMetadata, variants } from './test262/metadata.mjs'
 import { executeVariant } from './test262/execute.mjs'
 import { runJobs } from './test262/pool.mjs'
-import { loadCorpus, summarize } from './test262/run.mjs'
+import { loadCorpus, runtimeModes, summarize } from './test262/run.mjs'
 
 const metadata = (body = '') => readMetadata(`/*---\n${body}\n---*/\n`)
 const compile = source => {
@@ -57,6 +57,22 @@ test('strict transformation applies to the actual compiled input', () => {
   let seen
   assert.equal(run({ mode: 'strict', compile: source => { seen = source; return compile(source) } }).status, 'pass')
   assert.match(seen, /^"use strict";/)
+})
+
+test('passes each selected runtime explicitly to the compiler', () => {
+  for (const runtime of ['auto', 'full']) {
+    let options
+    assert.equal(run({ runtime, compile: (source, received) => { options = received; return compile(source) } }).status, 'pass')
+    assert.deepEqual(options, { filename: 'fixture.js', runtime })
+  }
+})
+
+test('runs both runtime modes by default and rejects misspelled or duplicate selections', () => {
+  assert.deepEqual(runtimeModes(), ['auto', 'full'])
+  assert.deepEqual(runtimeModes(['--runtime=both']), ['auto', 'full'])
+  assert.deepEqual(runtimeModes(['--runtime=auto']), ['auto'])
+  assert.deepEqual(runtimeModes(['--runtime=full']), ['full'])
+  for (const args of [['--runtime=atuo'], ['full'], ['--runtime=auto', '--runtime=full']]) assert.throws(() => runtimeModes(args), /Usage/)
 })
 
 test('parse negatives require parse-phase SyntaxError, not arbitrary compiler rejection', () => {

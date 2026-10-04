@@ -59,6 +59,8 @@ try {
 
 `compileSource(source, options?)` is synchronous. It reads no files, writes no files, and does not execute the input. It accepts a standalone script, rejects module syntax and unbound CommonJS globals, and returns `{ code, artifact }`. `filename` labels diagnostics; it does not resolve a file. `debug: true` includes instruction debug information. Locations, when available, use one-based lines and columns.
 
+The default `runtime: 'auto'` assembles the interpreter at compile time from the instructions and helpers required by every compiled function. A simple `console.log` program does not carry the class, async, or generator implementations. Use `runtime: 'full'` to retain the complete interpreter when diagnosing an issue. Both modes preserve the same bytecode and supported language behavior; no source rewriting or consumer build configuration is required. See [runtime assembly](docs/runtime-assembly.md) for the dependency analysis and boundaries.
+
 CommonJS consumers can use `const { compileSource } = require('script-vm-next/core')`. Type declarations are included. The root package also re-exports `compileSource`, but browser bundlers should use the dedicated `core` entry to avoid Node filesystem dependencies.
 
 ## File API: Node.js
@@ -76,7 +78,7 @@ const code = transform('./input.js', { format: 'iife' })
 
 `compile(inputPath, outputPath?, options?)` and `transform(inputPath, options?)` retain their file-based signatures. `transform` returns the generated string; `compile` returns the same `{ code, artifact }` shape as the source API. Omitting `outputPath` writes a sibling `.vm.js`, `.vm.mjs`, or `.vm.cjs` file according to the resolved format; passing `null` suppresses writing.
 
-The file API supports `format: 'auto' | 'iife' | 'esm' | 'cjs'`, `bundle` (default `true`), `external: string[]`, and `debug`. Automatic format detection considers filename extensions and module syntax. See the [compatibility matrix](docs/compatibility.md) for the current module-loading and output-format boundaries. The reserved `obfuscate` option is not implemented and is rejected.
+The file API supports `format: 'auto' | 'iife' | 'esm' | 'cjs'`, `runtime: 'auto' | 'full'` (default `auto`), `bundle` (default `true`), `external: string[]`, and `debug`. Automatic format detection considers filename extensions and module syntax. See the [compatibility matrix](docs/compatibility.md) for the current module-loading and output-format boundaries. The reserved `obfuscate` option is not implemented and is rejected.
 
 ## CLI
 
@@ -88,7 +90,7 @@ node output.vm.js
 npx script-vm-next --help
 ```
 
-The `transform` subcommand is also accepted. Options include `--format auto|iife|esm|cjs`, `--no-bundle`, `--external module-a,module-b`, and `--debug`. Compilation failures return a nonzero status with a diagnostic code and a source location when available.
+The `transform` subcommand is also accepted. Options include `--format auto|iife|esm|cjs`, `--runtime auto|full` (default `auto`), `--no-bundle`, `--external module-a,module-b`, and `--debug`. Compilation failures return a nonzero status with a diagnostic code and a source location when available.
 
 ## Language boundaries
 
@@ -130,7 +132,7 @@ The [CI workflow](.github/workflows/ci.yml) tests the compiler on Node.js 20, 22
 
 ## Architecture and next work
 
-Source → optional Node module bundling → Babel parsing and normalization → register-based IR → bytecode → runtime generation → output wrapping.
+Source → optional Node module bundling → Babel parsing and normalization → register-based IR → bytecode and runtime requirements → compile-time runtime assembly → output wrapping.
 
 Start with the [documentation index](docs/README.md), which labels each document's language. The [architecture guide](docs/01-architecture-overview.md) and [tutorials](docs/00-tutorial-guide.md) are currently in Simplified Chinese; the [compatibility matrix](docs/compatibility.md) is in English. A [pinned Test262 baseline](docs/test262.md) runs 219 selected ES2015 test files (428 execution variants) on Node.js 20, 22, and 24. Further compatibility work should expand that documented scope, add native-versus-VM regressions, resolve known semantic gaps, and validate real application inputs. A stable release requires evidence for its declared language scope; packaging and a playground alone do not establish language conformance.
 
