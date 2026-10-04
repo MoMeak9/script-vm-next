@@ -2,6 +2,7 @@ import { argumentsRuntimeSource } from './arguments-runtime'
 import { BINARY_OPS, OPCODES, UNARY_OPS } from '../runtime/opcodes'
 import { iteratorRuntimeSource } from './iterator-runtime'
 import { templateRuntimeSource } from './template-runtime'
+import { objectRuntimeSource } from './object-runtime'
 
 export function generateRuntimeSource(): string {
   return `
@@ -30,6 +31,7 @@ function __scriptvmRun(metadata, globalObject) {
   ${argumentsRuntimeSource}
   ${iteratorRuntimeSource}
   ${templateRuntimeSource}
+  ${objectRuntimeSource}
   function toTemplateString(value) { return \`\${value}\`; }
   function readGlobal(name) {
     switch (name) {
@@ -54,6 +56,12 @@ function __scriptvmRun(metadata, globalObject) {
       case '@script-vm/intrinsic/Construct': return iteratorIntrinsicConstruct;
       case '@script-vm/intrinsic/GetTemplateObject': return getTemplateObject;
       case '@script-vm/intrinsic/ToString': return toTemplateString;
+      case '@script-vm/intrinsic/ObjectDefineData': return objectDefineData;
+      case '@script-vm/intrinsic/ObjectDefineMethod': return objectDefineMethod;
+      case '@script-vm/intrinsic/ObjectSetPrototype': return objectSetPrototype;
+      case '@script-vm/intrinsic/ObjectSpread': return objectSpread;
+      case '@script-vm/intrinsic/ObjectSuperReference': return objectSuperReference;
+      case '@script-vm/intrinsic/ObjectSuperDelete': return objectSuperDelete;
       default:
         if (!(name in globalObject)) throw new intrinsicReferenceError(name + ' is not defined');
         return globalObject[name];
@@ -251,8 +259,8 @@ function __scriptvmRun(metadata, globalObject) {
         var frame = prepareGenerator(functionId, parentEnv, this, args)
         return generator(frame, this, args)
       } }.invoke
-      intrinsicObject.setPrototypeOf(closure, intrinsicObject.getPrototypeOf(generator))
-      intrinsicObject.defineProperty(closure, 'prototype', { value: generator.prototype, writable: true })
+      objectIntrinsicSetPrototype(closure, objectIntrinsicGetPrototype(generator))
+      objectIntrinsicDefine(closure, 'prototype', { value: generator.prototype, writable: true })
     } else if (meta.async) {
       closure = async function() {
         'use strict';
@@ -269,13 +277,13 @@ function __scriptvmRun(metadata, globalObject) {
         return executeSync(functionId, parentEnv, this, argumentValues(arguments, closure), new.target)
       }
     }
-    intrinsicObject.defineProperty(closure, 'name', {
+    objectIntrinsicDefine(closure, 'name', {
       value: meta.name === null ? '' : meta.name,
       configurable: true,
       writable: false,
       enumerable: false
     })
-    intrinsicObject.defineProperty(closure, 'length', { value: meta.length, configurable: true })
+    objectIntrinsicDefine(closure, 'length', { value: meta.length, configurable: true })
     return closure
   }
 
