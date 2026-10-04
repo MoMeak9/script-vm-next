@@ -12,7 +12,8 @@ export const argumentsRuntimeSource = `
   var argumentsDefineDescriptor = Reflect.defineProperty;
   var argumentsDelete = Reflect.deleteProperty;
   var argumentsApply = Reflect.apply;
-  var argumentsIterator = Array.prototype[Symbol.iterator];
+  var argumentsIteratorKey = Symbol.iterator;
+  var argumentsIterator = Array.prototype[argumentsIteratorKey];
   var argumentsTag = Symbol.toStringTag;
   function argumentValues(source, callee) {
     var values = arraySlice(source, 0);
@@ -37,7 +38,7 @@ export const argumentsRuntimeSource = `
     argumentsDefine(target, 'callee', {
       value: values.callee, writable: true, enumerable: false, configurable: true
     });
-    argumentsDefine(target, Symbol.iterator, {
+    argumentsDefine(target, argumentsIteratorKey, {
       value: argumentsIterator, writable: true, enumerable: false, configurable: true
     });
     // Only the final occurrence of a duplicate formal parameter is mapped,
