@@ -40,6 +40,10 @@ export interface ProgramArtifact {
   exportNames: string[]
   /** Generated, collision-free name for the ESM binding notification hook. */
   notifyIdentifier?: string
+  /** Native namespace imports for host external dependencies in ESM output. */
+  hostImports?: Array<{ source: string; names: string[] }>
+  /** Entry exports delegated directly to native host bindings. */
+  hostExports?: Array<{ exported: string; source: string; imported: string; namespace?: boolean }>
   debugInfo?: {
     instructions: string[]
   }

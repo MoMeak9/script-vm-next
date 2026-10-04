@@ -1,11 +1,11 @@
 /**
  * Module bundler for script-vm-next
  *
- * Resolves relative-path imports, inlines all dependent modules into a single
+ * Resolves local and package ESM imports, inlines dependent modules into a single
  * source string, and converts import/export syntax into plain ES5 that the VM
  * can execute.
  *
- * External (bare) imports are converted to require() calls.
+ * CommonJS, builtin and explicitly external imports use the native ESM loader.
  */
 
 import * as fs from 'node:fs'
@@ -14,6 +14,8 @@ import * as parser from '@babel/parser'
 import traverse from '@babel/traverse'
 import * as types from '@babel/types'
 import generator from '@babel/generator'
+import type { ProgramArtifact } from './types'
+import { resolveStaticImports, type ResolvedImport } from './module-resolution'
 
 export interface BundleOptions {
   /** Extra module names to treat as external (not inlined) */
@@ -29,6 +31,7 @@ interface ModuleInfo {
   absPath: string
   source: string
   deps: string[] // ids of modules this module imports
+  imports?: Map<string, ResolvedImport>
 }
 
 // ────────────────────────────────────────────────
@@ -67,74 +70,35 @@ function resolveModulePath(specifier: string, fromDir: string): string | null {
 
 function collectModules(
   entryPath: string,
-  externals: Set<string>
+  externals: Set<string>,
+  entryDir: string
 ): Map<string, ModuleInfo> {
   const modules = new Map<string, ModuleInfo>()
-  const visited = new Set<string>()
-
   function visit(absPath: string) {
     const realPath = fs.realpathSync(absPath)
-    if (visited.has(realPath)) return
-    visited.add(realPath)
-
+    const id = path.relative(entryDir, realPath)
+    if (modules.has(id)) return
     const source = fs.readFileSync(realPath, 'utf-8')
-    const entryDir = path.dirname(realPath)
-    const id = path.relative(path.dirname(entryPath), realPath)
-
-    const ast = parser.parse(source, {
-      sourceType: 'module',
-      plugins: [
-        'classProperties',
-        'classPrivateProperties',
-        'classPrivateMethods',
-        'optionalChaining',
-        'nullishCoalescingOperator',
-      ],
-    })
-
+    const ast = parseModule(source)
+    const specifiers: string[] = []
+    for (const node of ast.program.body) {
+      if (types.isImportDeclaration(node) || types.isExportAllDeclaration(node)
+        || types.isExportNamedDeclaration(node) && node.source) {
+        if (node.attributes?.length || node.assertions?.length) {
+          throw new Error(`Import attributes require a loader and are not supported in '${realPath}'`)
+        }
+        specifiers.push(node.source!.value)
+      }
+    }
+    const imports = resolveStaticImports(specifiers, realPath, externals)
     const deps: string[] = []
-
-    traverse(ast, {
-      ImportDeclaration(p) {
-        const spec = p.node.source.value
-        if (!isRelative(spec) || externals.has(spec)) return
-        const resolved = resolveModulePath(spec, entryDir)
-        if (!resolved) {
-          throw new Error(`Cannot resolve module '${spec}' from '${realPath}'`)
-        }
-        const depId = path.relative(path.dirname(entryPath), resolved)
-        deps.push(depId)
-        visit(resolved)
-      },
-      // Handle re-exports: export { x } from './foo'
-      ExportNamedDeclaration(p) {
-        if (!p.node.source) return
-        const spec = p.node.source.value
-        if (!isRelative(spec) || externals.has(spec)) return
-        const resolved = resolveModulePath(spec, entryDir)
-        if (!resolved) {
-          throw new Error(`Cannot resolve module '${spec}' from '${realPath}'`)
-        }
-        const depId = path.relative(path.dirname(entryPath), resolved)
-        deps.push(depId)
-        visit(resolved)
-      },
-      ExportAllDeclaration(p) {
-        const spec = p.node.source.value
-        if (!isRelative(spec) || externals.has(spec)) return
-        const resolved = resolveModulePath(spec, entryDir)
-        if (!resolved) {
-          throw new Error(`Cannot resolve module '${spec}' from '${realPath}'`)
-        }
-        const depId = path.relative(path.dirname(entryPath), resolved)
-        deps.push(depId)
-        visit(resolved)
-      },
-    })
-
-    modules.set(id, { id, absPath: realPath, source, deps })
+    modules.set(id, { id, absPath: realPath, source, deps, imports })
+    for (const resolved of imports.values()) {
+      if (!resolved.filename) continue
+      deps.push(path.relative(entryDir, resolved.filename))
+      visit(resolved.filename)
+    }
   }
-
   visit(entryPath)
   return modules
 }
@@ -176,6 +140,31 @@ function topoSort(modules: Map<string, ModuleInfo>, entryId: string, allowCycles
   return { sorted, cyclic }
 }
 
+/** Native imports run before the VM. Reject graphs that would reorder effects. */
+function nativeDependencyOrder(modules: Map<string, ModuleInfo>, entryId: string, entryDir: string): string[] {
+  const visited = new Set<string>()
+  const native = new Set<string>()
+  let completedModule: string | undefined
+  const visit = (id: string) => {
+    if (visited.has(id)) return
+    visited.add(id)
+    const mod = modules.get(id)!
+    for (const [specifier, resolved] of mod.imports!) {
+      if (resolved.filename) {
+        visit(path.relative(entryDir, resolved.filename))
+      } else if (!native.has(resolved.external!)) {
+        if (completedModule !== undefined && !resolved.external!.startsWith('node:')) {
+          throw new Error(`Cannot preserve module evaluation order: host external '${specifier}' in '${id}' would execute before inlined module '${completedModule}'. Keep this dependency in the inlined ESM graph instead of marking it external; CommonJS dependencies interleaved after inlined module evaluation require a loader that this compiler does not support`)
+        }
+        native.add(resolved.external!)
+      }
+    }
+    completedModule = id
+  }
+  visit(entryId)
+  return [...native]
+}
+
 // ────────────────────────────────────────────────
 // Transform a single module's AST
 // ────────────────────────────────────────────────
@@ -185,6 +174,7 @@ interface ExportBinding {
   source?: string
   namespace?: boolean
   identity: string
+  host?: { source: string; imported: string; namespace?: boolean }
 }
 
 type ModuleExports = Map<string, ExportBinding>
@@ -197,10 +187,10 @@ function parseModule(source: string): types.File {
   return parser.parse(source, { sourceType: 'module' })
 }
 
-function dependencyId(specifier: string, moduleId: string, entryDir: string): string {
-  const resolved = resolveModulePath(specifier, path.dirname(path.resolve(entryDir, moduleId)))
-  if (!resolved) throw new Error(`Cannot resolve module '${specifier}' from '${moduleId}'`)
-  return path.relative(entryDir, fs.realpathSync(resolved))
+function dependencyId(specifier: string, moduleId: string, modules: Map<string, ModuleInfo>, entryDir: string): string {
+  const resolved = modules.get(moduleId)!.imports!.get(specifier)!
+  if (!resolved.filename) throw new Error(`Module '${specifier}' from '${moduleId}' is external`)
+  return path.relative(entryDir, resolved.filename)
 }
 
 /** Resolve names and binding identities independently of module evaluation. */
@@ -211,11 +201,15 @@ function collectModuleExports(
   entryDir: string
 ): Map<string, ModuleExports> {
   const records = new Map<string, { explicit: ModuleExports; imports: ModuleExports; stars: string[] }>()
-  const internal = (source: string) => isRelative(source) && !externals.has(source)
-  const from = (id: string, source: string, local: string, namespace = false): ExportBinding => ({
-    source, local, namespace,
-    identity: `${internal(source) ? dependencyId(source, id, entryDir) : source}:${namespace ? '*' : local}`,
-  })
+  const internal = (id: string, source: string) => Boolean(modules.get(id)!.imports!.get(source)?.filename)
+  const from = (id: string, source: string, local: string, namespace = false): ExportBinding => {
+    const external = modules.get(id)!.imports!.get(source)!.external
+    return {
+      source, local, namespace,
+      identity: `${external ?? dependencyId(source, id, modules, entryDir)}:${namespace ? '*' : local}`,
+      host: external ? { source: external, imported: local, namespace } : undefined,
+    }
+  }
   for (const [id, module] of modules) {
     const ast = parseModule(module.source)
     const explicit: ModuleExports = new Map()
@@ -231,8 +225,8 @@ function collectModuleExports(
     }
     for (const node of ast.program.body) {
       if (types.isExportAllDeclaration(node)) {
-        if (!internal(node.source.value)) {
-          throw new Error(`Star re-exports from external module '${node.source.value}' require native ESM dependency linking, which this compiler does not yet support`)
+        if (!internal(id, node.source.value)) {
+          throw new Error(`Star re-exports from host external module '${node.source.value}' cannot be statically linked. Bundle an ESM dependency instead; CommonJS, builtin and explicitly external star exports are not supported`)
         }
         stars.push(node.source.value)
       } else if (types.isExportDefaultDeclaration(node)) {
@@ -269,7 +263,7 @@ function collectModuleExports(
     const record = records.get(id)!
     const names = new Set(record.explicit.keys())
     for (const source of record.stars) {
-      for (const name of namesOf(dependencyId(source, id, entryDir), seen)) {
+      for (const name of namesOf(dependencyId(source, id, modules, entryDir), seen)) {
         if (name !== 'default') names.add(name)
       }
     }
@@ -284,18 +278,18 @@ function collectModuleExports(
     const record = records.get(id)!
     const direct = record.explicit.get(name)
     if (direct) {
-      if (!direct.source || direct.namespace || !internal(direct.source)) return direct
-      const original = resolve(dependencyId(direct.source, id, entryDir), direct.local, seen)
-      return original && original !== ambiguous ? { ...direct, identity: original.identity } : original
+      if (!direct.source || direct.namespace || !internal(id, direct.source)) return direct
+      const original = resolve(dependencyId(direct.source, id, modules, entryDir), direct.local, seen)
+      return original && original !== ambiguous ? { ...direct, identity: original.identity, host: original.host } : original
     }
     if (name === 'default') return null
     let found: ExportBinding | null = null
     for (const source of record.stars) {
-      const original = resolve(dependencyId(source, id, entryDir), name, seen)
+      const original = resolve(dependencyId(source, id, modules, entryDir), name, seen)
       if (original === ambiguous) return ambiguous
       if (!original) continue
       if (found && found.identity !== original.identity) return ambiguous
-      found = { source, local: name, identity: original.identity }
+      found = { source, local: name, identity: original.identity, host: original.host }
     }
     return found
   }
@@ -307,8 +301,8 @@ function collectModuleExports(
       if (binding && binding !== ambiguous) resolved.set(name, binding)
     }
     for (const binding of [...records.get(id)!.imports.values(), ...records.get(id)!.explicit.values()]) {
-      if (!binding.source || binding.namespace || !internal(binding.source)) continue
-      const original = resolve(dependencyId(binding.source, id, entryDir), binding.local)
+      if (!binding.source || binding.namespace || !internal(id, binding.source)) continue
+      const original = resolve(dependencyId(binding.source, id, modules, entryDir), binding.local)
       if (!original || original === ambiguous) {
         throw new Error(`Module '${binding.source}' has no unambiguous export named '${binding.local}' (imported by '${id}')`)
       }
@@ -334,26 +328,27 @@ function transformModule(
   notifyIdentifier: string,
   registryIdentifier: string,
   exportsIdentifier: string,
-  instantiateBeforeEvaluation = false
+  instantiateBeforeEvaluation = false,
+  modules: Map<string, ModuleInfo>,
+  hostImports: Map<string, { index: number; names: Set<string> }>
 ): { code: string; exportNames: string[] } {
   const ast = parseModule(source)
   let program: import('@babel/traverse').NodePath<types.Program>
   traverse(ast, { Program(p) { program = p; p.stop() } })
 
   const prelude: types.Statement[] = []
-  const externalNamespaces = new Map<string, types.Identifier>()
-  const namespaceFor = (specifier: string): types.Expression => {
-    if (isRelative(specifier) && !externals.has(specifier)) {
-      return types.memberExpression(types.identifier(registryIdentifier), types.stringLiteral(dependencyId(specifier, moduleId, entryDir)), true)
+  const namespaceFor = (specifier: string, name?: string): types.Expression => {
+    const resolved = modules.get(moduleId)!.imports!.get(specifier)!
+    if (resolved.filename) {
+      return types.memberExpression(types.identifier(registryIdentifier), types.stringLiteral(dependencyId(specifier, moduleId, modules, entryDir)), true)
     }
-    let temp = externalNamespaces.get(specifier)
-    if (!temp) {
-      temp = program!.scope.generateUidIdentifier('external')
-      externalNamespaces.set(specifier, temp)
-      prelude.push(types.variableDeclaration('var', [types.variableDeclarator(temp,
-        types.callExpression(types.identifier('require'), [types.stringLiteral(specifier)]))]))
-    }
-    return types.cloneNode(temp)
+    const url = resolved.external!
+    if (!hostImports.has(url)) hostImports.set(url, { index: hostImports.size, names: new Set() })
+    if (name !== undefined) hostImports.get(url)!.names.add(name)
+    return types.memberExpression(
+      types.memberExpression(types.identifier(notifyIdentifier), types.identifier('imports')),
+      types.numericLiteral(hostImports.get(url)!.index), true,
+    )
   }
   const property = (object: types.Expression, name: string) =>
     types.memberExpression(object, types.stringLiteral(name), true)
@@ -478,10 +473,9 @@ function transformModule(
         if (types.isImportNamespaceSpecifier(spec)) {
           access = namespace
         } else if (types.isImportDefaultSpecifier(spec)) {
-          // Preserve the existing CommonJS interoperability rule for externals.
-          access = isRelative(specifier) && !externals.has(specifier) ? property(namespace, 'default') : namespace
+          access = property(namespaceFor(specifier, 'default'), 'default')
         } else {
-          access = property(namespace, exportName(spec.imported))
+          access = property(namespaceFor(specifier, exportName(spec.imported)), exportName(spec.imported))
         }
         for (const reference of binding.referencePaths) {
           if (reference.parentPath.isExportSpecifier()) continue
@@ -517,7 +511,7 @@ function transformModule(
   const getters: types.Statement[] = []
   for (const [name, binding] of exports) {
     const value = binding.source
-      ? binding.namespace ? namespaceFor(binding.source) : property(namespaceFor(binding.source), binding.local)
+      ? binding.namespace ? namespaceFor(binding.source) : property(namespaceFor(binding.source, binding.local), binding.local)
       : types.identifier(binding.local)
     getters.push(types.expressionStatement(types.callExpression(
       types.memberExpression(types.memberExpression(types.identifier(notifyIdentifier), types.identifier('Object')), types.identifier('defineProperty')),
@@ -828,6 +822,9 @@ export interface BundleResult {
   entryExports: string[]
   /** Private runtime hook used to refresh native ESM bindings. */
   notifyIdentifier?: string
+  /** Native namespaces required by CommonJS, builtin and explicit externals. */
+  hostImports?: ProgramArtifact['hostImports']
+  hostExports?: ProgramArtifact['hostExports']
   /** Generated name of the entry namespace returned by the VM. */
   exportsIdentifier?: string
 }
@@ -845,11 +842,12 @@ export function bundle(entryPath: string, options: BundleOptions = {}): BundleRe
   // Build dependency graph (ESM or CJS)
   const modules = isCJS
     ? collectCJSModules(absEntry, externals)
-    : collectModules(absEntry, externals)
+    : collectModules(absEntry, externals, entryDir)
 
   const entryId = path.relative(entryDir, absEntry)
   const { sorted: sortedIds, cyclic } = topoSort(modules, entryId, !isCJS)
 
+  const nativeOrder = isCJS ? [] : nativeDependencyOrder(modules, entryId, entryDir)
   const moduleExports = isCJS ? undefined : collectModuleExports(modules, sortedIds, externals, entryDir)
   const usedNames = new Set<string>()
   if (!isCJS) {
@@ -866,10 +864,16 @@ export function bundle(entryPath: string, options: BundleOptions = {}): BundleRe
   const notifyIdentifier = uniqueName('__scriptvmNotifyExports')
   const registryIdentifier = isCJS ? '__m' : uniqueName('__m')
   const exportsIdentifier = isCJS ? '__exports' : uniqueName('__exports')
+  const hostImports = new Map(nativeOrder.map((url, index) => [url, { index, names: new Set<string>() }]))
   const transform = (source: string, id: string, entry: string, external: Set<string>, dir: string) =>
     isCJS ? transformCJSModule(source, id, entry, external, dir)
-      : transformModule(source, id, entry, external, dir, moduleExports!.get(id)!, notifyIdentifier, registryIdentifier, exportsIdentifier, cyclic)
-  const notifyMetadata = isCJS ? {} : { notifyIdentifier, exportsIdentifier }
+      : transformModule(source, id, entry, external, dir, moduleExports!.get(id)!, notifyIdentifier, registryIdentifier, exportsIdentifier, cyclic, modules, hostImports)
+  const notifyMetadata = () => isCJS ? {} : {
+    notifyIdentifier,
+    exportsIdentifier,
+    hostImports: [...hostImports].map(([source, item]) => ({ source, names: [...item.names] })),
+    hostExports: [...moduleExports!.get(entryId)!].flatMap(([exported, binding]) => binding.host ? [{ exported, ...binding.host }] : []),
+  }
 
   // VM property stores use Reflect.set. A namespace proxy enforces the ESM
   // read-only contract even when a namespace escapes through a function call.
@@ -906,7 +910,7 @@ export function bundle(entryPath: string, options: BundleOptions = {}): BundleRe
     }
     for (const id of sortedIds) parts.push(`${instancesIdentifier}[${JSON.stringify(id)}].next();`)
     parts.push(`var ${exportsIdentifier} = ${registryIdentifier}[${JSON.stringify(entryId)}];`)
-    return { code: parts.join('\n'), entryExports: [...moduleExports!.get(entryId)!.keys()], ...notifyMetadata }
+    return { code: parts.join('\n'), entryExports: [...moduleExports!.get(entryId)!.keys()], ...notifyMetadata() }
   }
 
   // If only one module (no imports), just transform in-place
@@ -915,7 +919,7 @@ export function bundle(entryPath: string, options: BundleOptions = {}): BundleRe
     const { code, exportNames } = transform(mod.source, mod.id, entryId, externals, entryDir)
     // Wrap with __exports for consistency
     const wrapped = `${isCJS ? '' : '"use strict";\n'}var ${exportsIdentifier} = ${namespaceInit};\n${code}\n${exportsIdentifier} = ${namespaceResult};\n`
-    return { code: wrapped, entryExports: exportNames, ...notifyMetadata }
+    return { code: wrapped, entryExports: exportNames, ...notifyMetadata() }
   }
 
   // Build the bundled code
@@ -947,7 +951,7 @@ export function bundle(entryPath: string, options: BundleOptions = {}): BundleRe
     }
   }
 
-  return { code: parts.join('\n'), entryExports, ...notifyMetadata }
+  return { code: parts.join('\n'), entryExports, ...notifyMetadata() }
 }
 
 /**

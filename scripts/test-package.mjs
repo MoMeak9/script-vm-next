@@ -142,6 +142,33 @@ try {
   await run(process.execPath, ['consumer.cjs'])
   await run(process.execPath, ['consumer.mjs'])
 
+  console.log('[package] Linking an ESM-only dependency from the installed production compiler.')
+  const dependency = path.join(consumer, 'node_modules', 'scriptvm-fixture-state')
+  await mkdir(dependency, { recursive: true })
+  await writeFile(path.join(dependency, 'package.json'), JSON.stringify({
+    name: 'scriptvm-fixture-state', type: 'module',
+    exports: { '.': { import: './state.js', require: './wrong.cjs' } },
+  }))
+  await writeFile(path.join(dependency, 'state.js'),
+    'export let count = 1; export function increment() { count++; } export default 8;')
+  await writeFile(path.join(dependency, 'wrong.cjs'), 'throw new Error("must select import condition");')
+  await writeFile(path.join(consumer, 'static-entry.mjs'),
+    "export * from 'scriptvm-fixture-state'; export { default } from 'scriptvm-fixture-state';")
+  await writeFile(path.join(consumer, 'static-consumer.mjs'), `
+    import assert from 'node:assert/strict';
+    import { writeFileSync, rmSync } from 'node:fs';
+    import { transform } from 'script-vm-next';
+    const code = transform('static-entry.mjs', { format: 'esm' });
+    writeFileSync('static-output.mjs', code);
+    rmSync('node_modules/scriptvm-fixture-state', { recursive: true });
+    const result = await import('./static-output.mjs');
+    assert.equal(result.count, 1);
+    assert.equal(result.default, 8);
+    result.increment();
+    assert.equal(result.count, 2);
+  `)
+  await run(process.execPath, ['static-consumer.mjs'])
+
   const typedAssertions = `
     const options: CompileOptions = { format: 'iife' };
     const sourceOptions: CompileSourceOptions = { format: 'iife', filename: 'consumer.js' };

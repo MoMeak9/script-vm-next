@@ -42,6 +42,7 @@ export function packArtifact(artifact: ProgramArtifact): string {
 __vm_bridge.Object = Object;
 __vm_bridge.Proxy = Proxy;
 __vm_bridge.TypeError = TypeError;
+__vm_bridge.imports = [${(artifact.hostImports ?? []).map((_, index) => `__vm_import_${index}`).join(', ')}];
 var __vm_hasGlobal = Reflect.has, __vm_getGlobal = Reflect.get, __vm_ReferenceError = ReferenceError;
 __vm_bridge.getGlobal = function(name, allowMissing) {
   if (__vm_hasGlobal(__vm_global, name)) return __vm_getGlobal(__vm_global, name);
@@ -65,7 +66,18 @@ return __scriptvmRun(${metadata}, __vm_scope);
 })(${artifact.format === 'esm' ? '__vm_sync' : 'function(value) { return value; }'})`
 
   if (artifact.format === 'esm') {
-    return wrapAsESM(invocation, artifact.exportNames)
+    const imports = (artifact.hostImports ?? []).flatMap(({ source, names }, index) => [
+      `import * as __vm_import_${index} from ${JSON.stringify(source)};`,
+      // Namespace property reads alone do not validate missing named exports.
+      // Native import declarations preserve the link-time SyntaxError contract.
+      ...names.map((name, position) => `import { ${JSON.stringify(name)} as __vm_check_${index}_${position} } from ${JSON.stringify(source)};`),
+    ])
+    const hostExports = artifact.hostExports ?? []
+    const delegated = new Set(hostExports.map(item => item.exported))
+    const forwards = hostExports.map(({ exported, source, imported, namespace }) => namespace
+      ? `export * as ${JSON.stringify(exported)} from ${JSON.stringify(source)};`
+      : `export { ${JSON.stringify(imported)} as ${JSON.stringify(exported)} } from ${JSON.stringify(source)};`)
+    return [...imports, ...forwards, wrapAsESM(invocation, artifact.exportNames.filter(name => !delegated.has(name)))].join('\n')
   }
   if (artifact.format === 'cjs') {
     return wrapAsCJS(invocation, artifact.exportNames)
