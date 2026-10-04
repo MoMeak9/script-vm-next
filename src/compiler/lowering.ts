@@ -317,6 +317,10 @@ class ModuleLowerer {
         this.predeclareLexicalBindings([statement.body], builder, scope)
         continue
       }
+      if (t.isBlockStatement(statement) && statement.extra?.vmTransparentScope) {
+        this.predeclareLexicalBindings(statement.body, builder, scope)
+        continue
+      }
       if (t.isTryStatement(statement) && statement.block.extra?.vmTransparentScope) {
         this.predeclareLexicalBindings(statement.block.body, builder, scope)
         continue
@@ -345,6 +349,7 @@ class ModuleLowerer {
     const collect = (statement: t.Statement) => {
       if (t.isFunctionDeclaration(statement)) hoisted.push(statement)
       else if (t.isLabeledStatement(statement)) collect(statement.body)
+      else if (t.isBlockStatement(statement) && statement.extra?.vmTransparentScope) statement.body.forEach(collect)
       else if (t.isTryStatement(statement) && statement.block.extra?.vmTransparentScope) {
         statement.block.body.forEach(collect)
       }
