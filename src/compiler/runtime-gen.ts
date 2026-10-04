@@ -1,6 +1,7 @@
 import { BINARY_OPS, OPCODES, UNARY_OPS } from '../runtime/opcodes'
 import { iteratorRuntimeSource } from './iterator-runtime'
 import { templateRuntimeSource } from './template-runtime'
+import { argumentsRuntimeSource } from './arguments-runtime'
 
 export function generateRuntimeSource(): string {
   return `
@@ -28,6 +29,7 @@ function __scriptvmRun(metadata, globalObject) {
   function arraySlice(value, start) { return intrinsicReflect.apply(intrinsicArraySlice, value, [start]); }
   ${iteratorRuntimeSource}
   ${templateRuntimeSource}
+  ${argumentsRuntimeSource}
   function toTemplateString(value) { return \`\${value}\`; }
   function readGlobal(name) {
     switch (name) {
@@ -146,7 +148,7 @@ function __scriptvmRun(metadata, globalObject) {
     return targetEnv.values[slot]
   }
 
-  function writeSlot(targetEnv, slot, value, isInit) {
+  function writeSlot(targetEnv, slot, value, isInit, strict) {
     var kind = targetEnv.slotKinds[slot]
     if (isInit) {
       targetEnv.values[slot] = value
@@ -154,6 +156,10 @@ function __scriptvmRun(metadata, globalObject) {
       return value
     }
     assertInitialized(targetEnv, slot)
+    if (kind === 'function-name') {
+      if (strict) throw new intrinsicTypeError('Assignment to immutable function name');
+      return value;
+    }
     if (kind === 'const') {
       throw new TypeError("Assignment to constant variable '" + targetEnv.slotNames[slot] + "'")
     }
@@ -181,9 +187,15 @@ function __scriptvmRun(metadata, globalObject) {
         env.states[i] = 0
       }
     }
-    for (var i = 0; i < meta.params; i++) {
-      env.values[i] = args[i]
-      env.states[i] = 1
+    for (var i = 0; i < meta.parameterSlots.length; i++) {
+      var slot = meta.parameterSlots[i]
+      env.values[slot] = args[i]
+      env.states[slot] = 1
+    }
+    env.args = createArguments(meta, env, args)
+    if (meta.argumentsSlot !== undefined) {
+      env.values[meta.argumentsSlot] = env.args
+      env.states[meta.argumentsSlot] = 1
     }
     return env
   }
@@ -235,7 +247,7 @@ function __scriptvmRun(metadata, globalObject) {
       // next(). A concise method keeps this eager wrapper non-constructable.
       closure = { invoke() {
         'use strict';
-        var args = arraySlice(arguments, 0)
+        var args = argumentValues(arguments, closure)
         var frame = prepareGenerator(functionId, parentEnv, this, args)
         return generator(frame, this, args)
       } }.invoke
@@ -244,17 +256,17 @@ function __scriptvmRun(metadata, globalObject) {
     } else if (meta.async) {
       closure = async function() {
         'use strict';
-        return await executeAsync(functionId, parentEnv, this, arraySlice(arguments, 0), new.target)
+        return await executeAsync(functionId, parentEnv, this, argumentValues(arguments, closure), new.target)
       }
     } else if (meta.method) {
       closure = { invoke() {
         'use strict';
-        return executeSync(functionId, parentEnv, this, arraySlice(arguments, 0), undefined)
+        return executeSync(functionId, parentEnv, this, argumentValues(arguments, closure), undefined)
       } }.invoke
     } else {
       closure = function() {
         'use strict';
-        return executeSync(functionId, parentEnv, this, arraySlice(arguments, 0), new.target)
+        return executeSync(functionId, parentEnv, this, argumentValues(arguments, closure), new.target)
       }
     }
     intrinsicObject.defineProperty(closure, 'name', {
@@ -331,7 +343,7 @@ function __scriptvmRun(metadata, globalObject) {
               var storeDepth = code[pc++]
               var storeSlot = code[pc++]
               var storeSrc = code[pc++]
-              writeSlot(resolveEnv(env, storeDepth), storeSlot, regs[storeSrc], false)
+              writeSlot(resolveEnv(env, storeDepth), storeSlot, regs[storeSrc], false, meta.strict)
               break
             }
             case OPCODES.LOAD_GLOBAL:
@@ -590,7 +602,7 @@ function __scriptvmRun(metadata, globalObject) {
               var storeDepth = code[pc++]
               var storeSlot = code[pc++]
               var storeSrc = code[pc++]
-              writeSlot(resolveEnv(env, storeDepth), storeSlot, regs[storeSrc], false)
+              writeSlot(resolveEnv(env, storeDepth), storeSlot, regs[storeSrc], false, meta.strict)
               break
             }
             case OPCODES.LOAD_GLOBAL:
@@ -851,7 +863,7 @@ function __scriptvmRun(metadata, globalObject) {
               var storeDepth = code[pc++]
               var storeSlot = code[pc++]
               var storeSrc = code[pc++]
-              writeSlot(resolveEnv(env, storeDepth), storeSlot, regs[storeSrc], false)
+              writeSlot(resolveEnv(env, storeDepth), storeSlot, regs[storeSrc], false, meta.strict)
               break
             }
             case OPCODES.LOAD_GLOBAL:
@@ -1138,7 +1150,7 @@ function __scriptvmRun(metadata, globalObject) {
               var storeDepth = code[pc++]
               var storeSlot = code[pc++]
               var storeSrc = code[pc++]
-              writeSlot(resolveEnv(env, storeDepth), storeSlot, regs[storeSrc], false)
+              writeSlot(resolveEnv(env, storeDepth), storeSlot, regs[storeSrc], false, meta.strict)
               break
             }
             case OPCODES.LOAD_GLOBAL:

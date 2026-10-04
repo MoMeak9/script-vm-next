@@ -2,7 +2,7 @@ export type BindingRef =
   | { kind: 'slot'; depth: number; slot: number }
   | { kind: 'global'; name: string }
 
-export type SlotKind = 'var' | 'let' | 'const' | 'param' | 'function' | 'catch'
+export type SlotKind = 'var' | 'let' | 'const' | 'param' | 'function' | 'catch' | 'function-name'
 
 export type IRInstruction =
   | { op: 'label'; name: string }
@@ -48,6 +48,9 @@ export interface FunctionIR {
   id: number
   name: string | null
   params: number
+  parameterSlots: number[]
+  simpleParameters: boolean
+  argumentsSlot?: number
   slotNames: string[]
   slotKinds: SlotKind[]
   instructions: IRInstruction[]

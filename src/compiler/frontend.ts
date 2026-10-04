@@ -2,6 +2,7 @@ import * as parser from '@babel/parser'
 import traverseModule from '@babel/traverse'
 import * as t from '@babel/types'
 import { normalizeFunctionParameters } from './parameter-normalization'
+import { inferFunctionNames } from './named-evaluation'
 
 // Babel publishes CommonJS. Native ESM and browser bundlers may expose its
 // callable default one level below the module's default export.
@@ -1257,6 +1258,8 @@ export function normalizeAst(file: t.File): t.File {
   }
   let templateSiteCounter = 0
 
+  inferFunctionNames(file)
+
   // Normalize parameters before object/class visitors move their method bodies.
   traverse(file, { Function: normalizeFunctionParameters })
   traverse(file, { Identifier(path) { reservedNames.add(path.node.name) } })
@@ -1559,7 +1562,7 @@ export function normalizeAst(file: t.File): t.File {
   })
 
   // Pass 2: Normalize arrows, classes, catch clause renaming
-  const arrowCaptures = new WeakMap<t.Node, { thisId?: t.Identifier; argsId?: t.Identifier; newTargetId?: t.Identifier }>()
+  const arrowCaptures = new WeakMap<t.Node, { thisId?: t.Identifier; newTargetId?: t.Identifier }>()
 
   const skipNonArrowVisitors = {
     FunctionDeclaration(p: any) { p.skip() },
@@ -1572,9 +1575,9 @@ export function normalizeAst(file: t.File): t.File {
     ArrowFunctionExpression(path) {
       const { node } = path
 
-      // Detect this/arguments/new.target usage in arrow body (skip nested non-arrow functions)
+      // Capture this/new.target values; arguments resolves through its live
+      // lexical binding in lowering, including later assignments to that binding.
       let usesThis = false
-      let usesArguments = false
       let usesNewTarget = false
       path.traverse({
         ...skipNonArrowVisitors,
@@ -1582,11 +1585,6 @@ export function normalizeAst(file: t.File): t.File {
         // capture from their own enclosing scope
         ArrowFunctionExpression(p: any) { p.skip() },
         ThisExpression() { usesThis = true },
-        Identifier(innerPath: any) {
-          if (innerPath.node.name === 'arguments' && !innerPath.node.extra?.vmIntrinsicArguments && !innerPath.scope.getBinding('arguments')) {
-            usesArguments = true
-          }
-        },
         MetaProperty(innerPath: any) {
           if (innerPath.node.meta.name === 'new' && innerPath.node.property.name === 'target') {
             usesNewTarget = true
@@ -1594,7 +1592,7 @@ export function normalizeAst(file: t.File): t.File {
         },
       })
 
-      if (usesThis || usesArguments || usesNewTarget) {
+      if (usesThis || usesNewTarget) {
         const enclosing = path.findParent((p: any) =>
           p.isFunctionDeclaration() || p.isFunctionExpression() || p.isProgram()
         )
@@ -1621,15 +1619,6 @@ export function normalizeAst(file: t.File): t.File {
             )
           }
 
-          if (usesArguments && !captures.argsId) {
-            captures.argsId = t.identifier(nextId())
-            getBody(enclosingNode).unshift(
-              t.variableDeclaration('var', [
-                t.variableDeclarator(t.cloneNode(captures.argsId, true), t.identifier('arguments'))
-              ])
-            )
-          }
-
           if (usesNewTarget && !captures.newTargetId) {
             captures.newTargetId = t.identifier(nextId())
             getBody(enclosingNode).unshift(
@@ -1649,18 +1638,6 @@ export function normalizeAst(file: t.File): t.File {
               ArrowFunctionExpression(p: any) { p.skip() },
               ThisExpression(innerPath: any) {
                 innerPath.replaceWith(t.cloneNode(captures!.thisId!, true))
-              },
-            })
-          }
-
-          if (usesArguments && captures.argsId) {
-            path.traverse({
-              ...skipNonArrowVisitors,
-              ArrowFunctionExpression(p: any) { p.skip() },
-              Identifier(innerPath: any) {
-                if (innerPath.node.name === 'arguments' && !innerPath.node.extra?.vmIntrinsicArguments && !innerPath.scope.getBinding('arguments')) {
-                  innerPath.replaceWith(t.cloneNode(captures!.argsId!, true))
-                }
               },
             })
           }
@@ -1695,7 +1672,7 @@ export function normalizeAst(file: t.File): t.File {
       )
 
       const newNode = path.node as unknown as t.FunctionExpression
-      newNode.extra = { ...node.extra, scriptVmMethod: true }
+      newNode.extra = { ...node.extra, scriptVmMethod: true, scriptVmArrow: true }
 
     },
     CatchClause(path) {

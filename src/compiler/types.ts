@@ -20,6 +20,9 @@ export interface FunctionMeta {
   registerCount: number
   slotCount: number
   params: number
+  parameterSlots: number[]
+  simpleParameters: boolean
+  argumentsSlot?: number
   slotNames: string[]
   slotKinds: SlotKind[]
   async: boolean
