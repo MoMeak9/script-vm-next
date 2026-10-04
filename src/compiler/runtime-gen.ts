@@ -1,6 +1,7 @@
 import { argumentsRuntimeSource } from './arguments-runtime'
 import { BINARY_OPS, OPCODES, UNARY_OPS } from '../runtime/opcodes'
 import { iteratorRuntimeSource } from './iterator-runtime'
+import { classRuntimeSource } from './class-runtime'
 import { templateRuntimeSource } from './template-runtime'
 import { objectRuntimeSource } from './object-runtime'
 
@@ -33,6 +34,7 @@ function __scriptvmRun(metadata, globalObject) {
   function arraySlice(value, start) { return intrinsicReflect.apply(intrinsicArraySlice, value, [start]); }
   ${argumentsRuntimeSource}
   ${iteratorRuntimeSource}
+  ${classRuntimeSource}
   ${templateRuntimeSource}
   ${objectRuntimeSource}
   function toTemplateString(value) { return \`\${value}\`; }
@@ -53,6 +55,7 @@ function __scriptvmRun(metadata, globalObject) {
       case '@script-vm/intrinsic/RequireObject': return requireObject;
       case '@script-vm/intrinsic/ObjectRest': return objectRest;
       case '@script-vm/intrinsic/PropertyKey': return propertyKey;
+      case '@script-vm/intrinsic/FunctionName': return classFunctionName;
       case '@script-vm/intrinsic/EnumerateKeys': return enumerateKeys;
       case '@script-vm/intrinsic/FlattenArrays': return flattenArrays;
       case '@script-vm/intrinsic/Apply': return iteratorIntrinsicApply;

@@ -41,7 +41,7 @@ function classHelper(source: string, names: string[]): t.Statement[] {
   traverse(ast, {
     Identifier(path) {
       if (names.includes(path.node.name)) path.node.name = classLocal(path.node.name).name
-      else if (['Object', 'Reflect', 'ReferenceError', 'TypeError', 'PropertyKey'].includes(path.node.name)) {
+      else if (['Object', 'Reflect', 'ReferenceError', 'TypeError', 'PropertyKey', 'FunctionName'].includes(path.node.name)) {
         path.node.name = classIntrinsic(path.node.name as 'Object').name
       }
     },
@@ -68,8 +68,8 @@ function transformSuperCalls(
   const home = () => isStatic ? t.cloneNode(classId) : t.memberExpression(t.cloneNode(classId), t.identifier('prototype'))
   const superRef = (member: t.MemberExpression) => t.memberExpression(
     t.callExpression(classLocal('superRef'), [
-      home(), member.computed ? member.property as t.Expression
-        : t.stringLiteral((member.property as t.Identifier).name), receiver(),
+      home(), receiver(), member.computed ? member.property as t.Expression
+        : t.stringLiteral((member.property as t.Identifier).name),
     ]),
     t.identifier('value')
   )
@@ -78,14 +78,48 @@ function transformSuperCalls(
     Function(path) {
       if (path.node !== root && !path.isArrowFunctionExpression()) path.skip()
     },
-    Class(path) { path.skip() },
+    Class(path) {
+      // Heritage and computed keys belong to the enclosing lexical context;
+      // method bodies and field initializers belong to the nested class.
+      const expressions: { get(): t.Expression; set(value: t.Expression): void }[] = []
+      if (path.node.superClass) expressions.push({
+        get: () => path.node.superClass as t.Expression,
+        set: value => { path.node.superClass = value },
+      })
+      for (const member of path.node.body.body) {
+        if ('computed' in member && member.computed && 'key' in member) expressions.push({
+          get: () => member.key as t.Expression,
+          set: value => { member.key = value },
+        })
+      }
+      for (const expression of expressions) {
+        const statement = t.expressionStatement(expression.get())
+        const statements = [statement]
+        transformSuperCalls(statements, classId, isStatic, derivedConstructor)
+        expression.set((statements[0] as t.ExpressionStatement).expression)
+      }
+      path.skip()
+    },
+    UnaryExpression(path) {
+      const argument = path.node.argument
+      if (path.node.operator !== 'delete' || !t.isMemberExpression(argument) || !t.isSuper(argument.object)) return
+      // Evaluate the receiver and key expression, but never coerce the key of
+      // a super reference rejected by delete.
+      path.replaceWith(t.sequenceExpression([
+        receiver(),
+        ...(argument.computed ? [argument.property as t.Expression] : []),
+        t.callExpression(classLocal('deleteSuper'), []),
+      ]))
+      path.skip()
+    },
     CallExpression: { exit(path) {
       const callee = path.node.callee
       if (t.isSuper(callee)) {
         path.replaceWith(
           t.callExpression(classLocal('initThis'), [t.callExpression(
             t.memberExpression(classIntrinsic('Reflect'), t.identifier('construct')),
-            [classLocal('super'), buildConcatArgs(path.node.arguments as (t.Expression | t.SpreadElement)[]),
+            [t.callExpression(t.memberExpression(classIntrinsic('Object'), t.identifier('getPrototypeOf')), [t.cloneNode(classId)]),
+              buildConcatArgs(path.node.arguments as (t.Expression | t.SpreadElement)[]),
               t.metaProperty(t.identifier('new'), t.identifier('target'))]
           )])
         )
@@ -144,7 +178,7 @@ interface PrivateDescriptor {
 // Reserved names are injected after parsing and cannot be declared by source
 // code. LOAD_GLOBAL resolves them to VM-private host intrinsics, so class
 // helpers do not accidentally capture a user's Object/WeakMap/etc. binding.
-function classIntrinsic(name: 'Object' | 'WeakMap' | 'WeakSet' | 'TypeError' | 'ReferenceError' | 'Reflect' | 'PropertyKey' | 'Proxy'): t.Identifier {
+function classIntrinsic(name: 'Object' | 'WeakMap' | 'WeakSet' | 'TypeError' | 'ReferenceError' | 'Reflect' | 'PropertyKey' | 'Proxy' | 'FunctionName'): t.Identifier {
   return t.identifier(`@script-vm/intrinsic/${name}`)
 }
 
@@ -428,7 +462,7 @@ function transformPrivateBody(bodyStatements: t.Statement[], descriptors: Map<st
   bodyStatements.push(...transformed)
 }
 
-function buildClassIife(node: t.ClassDeclaration | t.ClassExpression, classId: t.Identifier): t.Expression {
+function buildClassEvaluation(node: t.ClassDeclaration | t.ClassExpression, classId: t.Identifier, namespace: string): t.Expression {
   const sourceClassId = classId
   classId = classLocal('constructor')
   const superClass = node.superClass
@@ -439,26 +473,32 @@ function buildClassIife(node: t.ClassDeclaration | t.ClassExpression, classId: t
   const privateDescriptors = new Map<string, PrivateDescriptor>()
   const helperStatements = createPrivateHelpers()
   helperStatements.push(...classHelper(`
-    function superRef(home, key, receiver) {
-      key = PropertyKey(key);
+    function superRef(home, receiver, key) {
       var base = Object.getPrototypeOf(home);
+      var converted = false;
+      function referenceKey() {
+        if (base === null) throw new TypeError('Cannot access a null super base');
+        if (!converted) { key = PropertyKey(key); converted = true; }
+        return key;
+      }
       return Object.defineProperty({}, 'value', {
-        get: function () { return Reflect.get(base, key, receiver); },
+        get: function () { return Reflect.get(base, referenceKey(), receiver); },
         set: function (value) {
-          if (!Reflect.set(base, key, value, receiver)) throw new TypeError('Cannot assign to inherited property');
+          if (!Reflect.set(base, referenceKey(), value, receiver)) throw new TypeError('Cannot assign to inherited property');
         }
       });
     }
+    function deleteSuper() { throw new ReferenceError('Cannot delete a super property'); }
     function defineMethod(target, key, kind, fn) {
       key = PropertyKey(key);
-      var name = typeof key === 'symbol' ? (key.description === void 0 ? '' : '[' + key.description + ']') : key;
+      var name = FunctionName(key);
       Object.defineProperty(fn, 'name', { value: (kind === 'value' ? '' : kind + ' ') + name, configurable: true });
       var descriptor = { configurable: true, enumerable: false };
       descriptor[kind] = fn;
       if (kind === 'value') descriptor.writable = true;
       Object.defineProperty(target, key, descriptor);
     }
-  `, ['superRef', 'defineMethod']))
+  `, ['superRef', 'deleteSuper', 'defineMethod']))
 
   if (body.some((member) => t.isClassAccessorProperty(member) || t.isClassPrivateProperty(member) && member.static && !member.value && false)) {
     // keep placeholder to avoid unsupported syntax slipping through silently
@@ -584,7 +624,8 @@ function buildClassIife(node: t.ClassDeclaration | t.ClassExpression, classId: t
       t.expressionStatement(
         t.callExpression(classLocal('initThis'), [t.callExpression(
           t.memberExpression(classIntrinsic('Reflect'), t.identifier('construct')),
-          [classLocal('super'), t.identifier('arguments'), t.metaProperty(t.identifier('new'), t.identifier('target'))]
+          [t.callExpression(t.memberExpression(classIntrinsic('Object'), t.identifier('getPrototypeOf')), [t.cloneNode(classId)]),
+            t.identifier('arguments'), t.metaProperty(t.identifier('new'), t.identifier('target'))]
         )])
       ),
     ]
@@ -711,6 +752,18 @@ function buildClassIife(node: t.ClassDeclaration | t.ClassExpression, classId: t
   }
   statements.push(constructor)
 
+  if (node.extra?.vmClassNameExpression) {
+    const key = node.extra.vmClassNameExpression as t.Expression
+    const name = t.callExpression(classIntrinsic('FunctionName'), [t.cloneNode(key)])
+    statements.push(t.expressionStatement(t.callExpression(
+      t.memberExpression(classIntrinsic('Object'), t.identifier('defineProperty')),
+      [classId, t.stringLiteral('name'), t.objectExpression([
+        t.objectProperty(t.identifier('value'), name),
+        t.objectProperty(t.identifier('configurable'), t.booleanLiteral(true)),
+      ])]
+    )))
+  }
+
   if (superClass) {
     // A proxy preserves IsConstructor while its construct trap avoids executing
     // the superclass or reading its prototype during this validation step.
@@ -801,12 +854,38 @@ function buildClassIife(node: t.ClassDeclaration | t.ClassExpression, classId: t
     )))
   }
 
-  statements.push(t.returnStatement(classId))
+  statements.push(t.expressionStatement(classId))
 
-  return t.callExpression(
-    t.functionExpression(null, superParam ? [superParam] : [], strictClassBody(statements)),
-    superClass ? [superClass as t.Expression] : []
-  )
+  // A class definition creates a lexical environment, not a function call.
+  // Keep keys/heritage in the caller's frame (including yield, arguments and
+  // new.target), while every evaluation gets its own helper/name bindings.
+  const declarations: t.Statement[] = []
+  const evaluation: t.Statement[] = []
+  if (superParam) evaluation.push(t.variableDeclaration('let', [t.variableDeclarator(superParam, superClass)]))
+  for (const statement of statements) {
+    if (t.isFunctionDeclaration(statement)) {
+      const fn = t.functionExpression(null, statement.params, statement.body, statement.generator, statement.async)
+      fn.extra = statement.extra
+      declarations.push(t.variableDeclaration('const', [t.variableDeclarator(statement.id!, fn)]))
+    } else {
+      if (t.isVariableDeclaration(statement) && statement.kind === 'var') statement.kind = 'let'
+      evaluation.push(statement)
+    }
+  }
+  const block = t.blockStatement([...declarations, ...evaluation])
+  block.extra = { vmClassEvaluation: true }
+  const expression = t.doExpression(block)
+  const ast = t.file(t.program([t.expressionStatement(expression)]))
+  traverse(ast, {
+    Identifier(path) {
+      // Already namespaced references belong to an outer class. In particular,
+      // lexical super in a nested class key must retain that outer home object.
+      if (/^@script-vm\/class\/(?!scope-)/.test(path.node.name)) {
+        path.node.name = path.node.name.replace('@script-vm/class/', `@script-vm/class/scope-${namespace}/`)
+      }
+    },
+  })
+  return expression
 }
 
 function iteratorIntrinsic(name: string, args: t.Expression[]): t.CallExpression {
@@ -944,7 +1023,16 @@ function buildConcatArgs(elements: (t.Expression | t.SpreadElement)[]): t.Expres
 }
 
 function getEnclosingBody(path: any): t.Statement[] {
-  const functionPath = path.getFunctionParent()
+  let functionPath
+  for (let child = path; child.parentPath; child = child.parentPath) {
+    const parent = child.parentPath
+    if (!parent.isFunction()) continue
+    // A method's computed key is evaluated outside its own function body.
+    // Temporaries introduced there belong to the surrounding execution frame.
+    if ((parent.isClassMethod() || parent.isObjectMethod()) && parent.node.computed && child.key === 'key') continue
+    functionPath = parent
+    break
+  }
   if (functionPath && 'body' in functionPath.node) {
     if (t.isBlockStatement((functionPath.node as any).body)) {
       return ((functionPath.node as any).body as t.BlockStatement).body
@@ -1300,6 +1388,20 @@ export function normalizeAst(file: t.File): t.File {
   traverse(file, { Function: normalizeFunctionParameters })
   traverse(file, { Identifier(path) { reservedNames.add(path.node.name) } })
 
+  // Computed property NamedEvaluation receives the already coerced key. Set
+  // the class name during its definition so static members can observe or
+  // replace it; naming the finished value would be too late.
+  traverse(file, {
+    ObjectProperty(path) {
+      const { node } = path
+      if (!node.computed || !t.isClassExpression(node.value) || node.value.id) return
+      const key = t.identifier(nextId())
+      node.key = t.assignmentExpression('=', t.cloneNode(key), iteratorIntrinsic('PropertyKey', [node.key as t.Expression]))
+      node.value.extra = { ...node.value.extra, vmClassNameExpression: key }
+      declareTempBindings(path, [key])
+    },
+  })
+
   traverse(file, {
     BigIntLiteral(path: any) {
       // Desugar 123n → BigInt("123") to avoid constant pool JSON serialization issues
@@ -1572,7 +1674,26 @@ export function normalizeAst(file: t.File): t.File {
     },
   })
 
-  // Pass 2: Normalize arrows, classes, catch clause renaming
+  // Lower classes before arrows so lexical captures also visit computed class
+  // keys. Method bodies remain ordinary function boundaries in this pass.
+  traverse(file, {
+    ClassDeclaration(path) {
+      const node = path.node
+      const className = node.id ? node.id.name : '_AnonymousClass'
+      const classId = t.identifier(className)
+      path.replaceWith(
+        t.variableDeclaration('let', [t.variableDeclarator(classId, buildClassEvaluation(node, classId, nextId()))])
+      )
+    },
+    ClassExpression(path) {
+      const node = path.node
+      const className = node.id ? node.id.name : '_AnonymousClass'
+      const classId = t.identifier(className)
+      path.replaceWith(buildClassEvaluation(node, classId, nextId()))
+    },
+  })
+
+  // Normalize arrows and catch clause bindings after class lexical evaluation.
   const arrowCaptures = new WeakMap<t.Node, { thisId?: t.Identifier; newTargetId?: t.Identifier }>()
 
   const skipNonArrowVisitors = {
@@ -1691,20 +1812,6 @@ export function normalizeAst(file: t.File): t.File {
         const nextName = nextId()
         path.scope.rename(path.node.param.name, nextName)
       }
-    },
-    ClassDeclaration(path) {
-      const node = path.node
-      const className = node.id ? node.id.name : '_AnonymousClass'
-      const classId = t.identifier(className)
-      path.replaceWith(
-        t.variableDeclaration('let', [t.variableDeclarator(classId, buildClassIife(node, classId))])
-      )
-    },
-    ClassExpression(path) {
-      const node = path.node
-      const className = node.id ? node.id.name : '_AnonymousClass'
-      const classId = t.identifier(className)
-      path.replaceWith(buildClassIife(node, classId))
     },
   })
 

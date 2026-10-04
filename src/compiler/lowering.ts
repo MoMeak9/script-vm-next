@@ -314,7 +314,8 @@ class ModuleLowerer {
   private predeclareLexicalBindings(statements: t.Statement[], builder: FunctionBuilder, scope: ScopeFrame) {
     for (const statement of statements) {
       if (t.isLabeledStatement(statement)) {
-        this.predeclareLexicalBindings([statement.body], builder, scope)
+        const body = statement.body
+        this.predeclareLexicalBindings(t.isBlockStatement(body) && body.extra?.vmTransparentScope ? body.body : [body], builder, scope)
         continue
       }
       if (t.isTryStatement(statement) && statement.block.extra?.vmTransparentScope) {
@@ -719,6 +720,21 @@ class ModuleLowerer {
   }
 
   private compileExpression(expression: t.Expression, builder: FunctionBuilder, scope: ScopeFrame): number {
+    if (t.isDoExpression(expression) && expression.body.extra?.vmClassEvaluation) {
+      const statements = expression.body.body
+      const classScope = builder.createScope(scope)
+      this.predeclareLexicalBindings(statements, builder, classScope)
+      builder.emit({ op: 'enter_scope', slots: [...classScope.localSlots] })
+      const previousStrict = builder.strict
+      builder.strict = true
+      for (const statement of statements.slice(0, -1)) this.compileStatement(statement, builder, classScope)
+      const result = statements[statements.length - 1]
+      if (!t.isExpressionStatement(result)) throw new Error('Internal class evaluation must end in a value')
+      const value = this.compileExpression(result.expression, builder, classScope)
+      builder.strict = previousStrict
+      builder.emit({ op: 'leave_scope' })
+      return value
+    }
     if (t.isDoExpression(expression) && expression.body.extra?.vmTransparentScope) {
       const statements = expression.body.body
       this.predeclareFunctionBindings(statements, builder)
