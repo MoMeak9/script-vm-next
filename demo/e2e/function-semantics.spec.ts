@@ -22,12 +22,25 @@ test('function environments and arguments run through the browser compiler worke
       a = 4;
       return [first, second, arguments[0], a, arguments.callee === mapped].join(',');
     }
+    class Base {}
+    class Derived extends Base {
+      constructor() {
+        const before = inner();
+        let value = 8;
+        const read = nested();
+        super();
+        this.result = [before, read()].join(',');
+        function inner() { return 7; }
+        function nested() { return () => value; }
+      }
+    }
     const arrow = () => 1;
     let assigned; assigned = function() {};
     console.log('self', factorial(5));
     console.log('scope', scoped());
     console.log('arguments', mapped(1));
     console.log('names', arrow.name, assigned.name);
+    console.log('constructor', new Derived().result);
   `);
   await page.locator('#compile-button').click();
   await expect(page.locator('#error-panel')).toBeHidden();
@@ -39,4 +52,5 @@ test('function environments and arguments run through the browser compiler worke
   await expect(logs).toContainText('scope 7,undefined');
   await expect(logs).toContainText('arguments 2,3,3,4,true');
   await expect(logs).toContainText('names arrow assigned');
+  await expect(logs).toContainText('constructor 7,8');
 });
