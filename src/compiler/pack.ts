@@ -50,9 +50,9 @@ __vm_bridge.getGlobal = function(name, allowMissing) {
 };
 var __vm_scope = new Proxy(__vm_global, { get: function(target, key) {
   if (key === ${JSON.stringify(artifact.notifyIdentifier)}) return __vm_bridge;
-  return Reflect.get(target, key);
+  return __vm_getGlobal(target, key);
 }, has: function(target, key) {
-  return key === ${JSON.stringify(artifact.notifyIdentifier)} || Reflect.has(target, key);
+  return key === ${JSON.stringify(artifact.notifyIdentifier)} || __vm_hasGlobal(target, key);
 } });`
     : 'var __vm_scope = __vm_global;'
   const invocation = `(function(__vm_notify){${JS_PREAMBLE}

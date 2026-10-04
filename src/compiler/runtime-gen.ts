@@ -20,18 +20,42 @@ function __scriptvmRun(metadata, globalObject) {
   // Capture their intrinsics outside interpreted lexical scopes; a parameter
   // named Object or WeakMap must not change private field operator semantics.
   var intrinsicObject = Object;
+  var intrinsicArray = Array;
+  var intrinsicObjectCreate = Object.create;
+  var intrinsicObjectDefineProperty = Object.defineProperty;
+  var intrinsicObjectGetOwnPropertyDescriptor = Object.getOwnPropertyDescriptor;
+  var intrinsicObjectGetPrototypeOf = Object.getPrototypeOf;
+  var intrinsicObjectSetPrototypeOf = Object.setPrototypeOf;
   var intrinsicWeakMap = WeakMap;
   var intrinsicWeakSet = WeakSet;
   var intrinsicTypeError = TypeError;
   var intrinsicReferenceError = ReferenceError;
   var intrinsicReflect = Reflect;
+  var intrinsicReflectApply = Reflect.apply;
+  var intrinsicReflectConstruct = Reflect.construct;
   var intrinsicReflectSet = Reflect.set;
   var intrinsicReflectDelete = Reflect.deleteProperty;
   var intrinsicIteratorSymbol = Symbol.iterator;
   var intrinsicAsyncIteratorSymbol = Symbol.asyncIterator;
+  var intrinsicReflectOwnKeys = Reflect.ownKeys;
+  var intrinsicArrayPush = Array.prototype.push;
+
+  // Compiler helper namespaces must not observe later edits to public Object
+  // and Reflect methods. A bound Object keeps its native call/construct behavior;
+  // copying own descriptors also retains the original prototype and static API.
+  function snapshotIntrinsic(source, target) {
+    var keys = intrinsicReflectOwnKeys(source);
+    for (var i = 0; i < keys.length; i++) {
+      intrinsicObjectDefineProperty(target, keys[i], intrinsicObjectGetOwnPropertyDescriptor(source, keys[i]));
+    }
+    return target;
+  }
+  var compilerObject = snapshotIntrinsic(intrinsicObject,
+    intrinsicReflectApply(Function.prototype.bind, intrinsicObject, [undefined]));
+  var compilerReflect = snapshotIntrinsic(intrinsicReflect, intrinsicObjectCreate(null));
   var intrinsicProxy = Proxy;
   var intrinsicArraySlice = Array.prototype.slice;
-  function arraySlice(value, start) { return intrinsicReflect.apply(intrinsicArraySlice, value, [start]); }
+  function arraySlice(value, start) { return intrinsicReflectApply(intrinsicArraySlice, value, [start]); }
   ${argumentsRuntimeSource}
   ${iteratorRuntimeSource}
   ${classRuntimeSource}
@@ -40,12 +64,12 @@ function __scriptvmRun(metadata, globalObject) {
   function toTemplateString(value) { return \`\${value}\`; }
   function readGlobal(name) {
     switch (name) {
-      case '@script-vm/intrinsic/Object': return intrinsicObject;
+      case '@script-vm/intrinsic/Object': return compilerObject;
       case '@script-vm/intrinsic/WeakMap': return intrinsicWeakMap;
       case '@script-vm/intrinsic/WeakSet': return intrinsicWeakSet;
       case '@script-vm/intrinsic/TypeError': return intrinsicTypeError;
       case '@script-vm/intrinsic/ReferenceError': return intrinsicReferenceError;
-      case '@script-vm/intrinsic/Reflect': return intrinsicReflect;
+      case '@script-vm/intrinsic/Reflect': return compilerReflect;
       case '@script-vm/intrinsic/Proxy': return intrinsicProxy;
       case '@script-vm/intrinsic/ArraySlice': return arraySlice;
       case '@script-vm/intrinsic/IteratorStart': return iteratorStart;
@@ -76,7 +100,7 @@ function __scriptvmRun(metadata, globalObject) {
 
   function writeGlobal(name, value, strict) {
     if (strict && !(name in globalObject)) throw new intrinsicReferenceError(name + ' is not defined');
-    if (!intrinsicReflect.set(globalObject, name, value) && strict) throw new intrinsicTypeError('Cannot assign global ' + name);
+    if (!intrinsicReflectSet(globalObject, name, value) && strict) throw new intrinsicTypeError('Cannot assign global ' + name);
   }
 
   function setProperty(object, key, value, strict) {
@@ -205,7 +229,7 @@ function __scriptvmRun(metadata, globalObject) {
 
   function assertInitialized(targetEnv, slot) {
     if (!targetEnv.states[slot]) {
-      throw new ReferenceError("Cannot access '" + targetEnv.slotNames[slot] + "' before initialization")
+      throw new intrinsicReferenceError("Cannot access '" + targetEnv.slotNames[slot] + "' before initialization")
     }
   }
 
@@ -227,7 +251,7 @@ function __scriptvmRun(metadata, globalObject) {
       return value;
     }
     if (kind === 'const') {
-      throw new TypeError("Assignment to constant variable '" + targetEnv.slotNames[slot] + "'")
+      throw new intrinsicTypeError("Assignment to constant variable '" + targetEnv.slotNames[slot] + "'")
     }
     targetEnv.values[slot] = value
     return value
@@ -235,8 +259,8 @@ function __scriptvmRun(metadata, globalObject) {
 
   function createEnv(meta, parentEnv, thisValue, args) {
     var env = {
-      values: new Array(meta.slotCount),
-      states: new Array(meta.slotCount),
+      values: new intrinsicArray(meta.slotCount),
+      states: new intrinsicArray(meta.slotCount),
       slotKinds: meta.slotKinds,
       slotNames: meta.slotNames,
       parent: parentEnv,
@@ -268,8 +292,8 @@ function __scriptvmRun(metadata, globalObject) {
 
   function createScopeEnv(meta, parentEnv, thisValue, args, slots, sourceEnv) {
     var env = {
-      values: new Array(meta.slotCount),
-      states: new Array(meta.slotCount),
+      values: new intrinsicArray(meta.slotCount),
+      states: new intrinsicArray(meta.slotCount),
       slotKinds: meta.slotKinds,
       slotNames: meta.slotNames,
       parent: parentEnv,
@@ -291,7 +315,7 @@ function __scriptvmRun(metadata, globalObject) {
 
   function prepareGenerator(functionId, parentEnv, thisValue, args) {
     var meta = metadata.functions[functionId]
-    var frame = { env: createEnv(meta, parentEnv, thisValue, args), regs: new Array(meta.registerCount) }
+    var frame = { env: createEnv(meta, parentEnv, thisValue, args), regs: new intrinsicArray(meta.registerCount) }
     if (meta.parameterEnd !== undefined) {
       executeSync(functionId, parentEnv, thisValue, args, undefined, frame, meta.parameterEnd)
     }
@@ -317,8 +341,8 @@ function __scriptvmRun(metadata, globalObject) {
         var frame = prepareGenerator(functionId, parentEnv, this, args)
         return generator(frame, this, args)
       } }.invoke
-      objectIntrinsicSetPrototype(closure, objectIntrinsicGetPrototype(generator))
-      objectIntrinsicDefine(closure, 'prototype', { value: generator.prototype, writable: true })
+      intrinsicObjectSetPrototypeOf(closure, intrinsicObjectGetPrototypeOf(generator))
+      intrinsicObjectDefineProperty(closure, 'prototype', { value: generator.prototype, writable: true })
     } else if (meta.async) {
       closure = async function() {
         'use strict';
@@ -335,20 +359,20 @@ function __scriptvmRun(metadata, globalObject) {
         return executeSync(functionId, parentEnv, this, argumentValues(arguments, closure), new.target)
       }
     }
-    objectIntrinsicDefine(closure, 'name', {
+    intrinsicObjectDefineProperty(closure, 'name', {
       value: meta.name === null ? '' : meta.name,
       configurable: true,
       writable: false,
       enumerable: false
     })
-    objectIntrinsicDefine(closure, 'length', { value: meta.length, configurable: true })
+    intrinsicObjectDefineProperty(closure, 'length', { value: meta.length, configurable: true })
     return closure
   }
 
   function executeSync(functionId, parentEnv, thisValue, args, newTarget, frame, end) {
     var meta = metadata.functions[functionId]
     var env = frame ? frame.env : createEnv(meta, parentEnv, thisValue, args)
-    var regs = frame ? frame.regs : new Array(meta.registerCount)
+    var regs = frame ? frame.regs : new intrinsicArray(meta.registerCount)
     var code = metadata.bytecode
     function run(start, end) {
       var pc = start
@@ -362,7 +386,7 @@ function __scriptvmRun(metadata, globalObject) {
               var enterCount = code[pc++]
               var enterSlots = []
               for (var enterIndex = 0; enterIndex < enterCount; enterIndex++) {
-                enterSlots.push(code[pc++])
+                intrinsicReflectApply(intrinsicArrayPush, enterSlots, [code[pc++]])
               }
               env = createScopeEnv(meta, env, env.thisValue, env.args, enterSlots, null)
               break
@@ -374,7 +398,7 @@ function __scriptvmRun(metadata, globalObject) {
               var replaceCount = code[pc++]
               var replaceSlots = []
               for (var replaceIndex = 0; replaceIndex < replaceCount; replaceIndex++) {
-                replaceSlots.push(code[pc++])
+                intrinsicReflectApply(intrinsicArrayPush, replaceSlots, [code[pc++]])
               }
               env = createScopeEnv(meta, env.parent, env.thisValue, env.args, replaceSlots, env)
               break
@@ -539,10 +563,10 @@ function __scriptvmRun(metadata, globalObject) {
               var argc = code[pc++]
               var argv = []
               for (var i = 0; i < argc; i++) {
-                argv.push(regs[code[pc++]])
+                intrinsicReflectApply(intrinsicArrayPush, argv, [regs[code[pc++]]])
               }
               var receiver = thisIndex >= 0 ? regs[thisIndex] : undefined
-              regs[callDst] = Reflect.apply(callFn, receiver, argv)
+              regs[callDst] = intrinsicReflectApply(callFn, receiver, argv)
               break
             }
             case OPCODES.NEW: {
@@ -551,9 +575,9 @@ function __scriptvmRun(metadata, globalObject) {
               var newArgc = code[pc++]
               var newArgs = []
               for (var j = 0; j < newArgc; j++) {
-                newArgs.push(regs[code[pc++]])
+                intrinsicReflectApply(intrinsicArrayPush, newArgs, [regs[code[pc++]]])
               }
-              regs[newDst] = Reflect.construct(ctor, newArgs)
+              regs[newDst] = intrinsicReflectConstruct(ctor, newArgs)
               break
             }
             case OPCODES.AWAIT:
@@ -575,7 +599,7 @@ function __scriptvmRun(metadata, globalObject) {
               break
             case OPCODES.ARRAY_PUSH: {
               var arr = regs[code[pc++]]
-              arr.push(regs[code[pc++]])
+              intrinsicReflectApply(intrinsicArrayPush, arr, [regs[code[pc++]]])
               break
             }
             case OPCODES.OBJECT_SET: {
@@ -606,7 +630,7 @@ function __scriptvmRun(metadata, globalObject) {
   async function executeAsync(functionId, parentEnv, thisValue, args, newTarget) {
     var meta = metadata.functions[functionId]
     var env = createEnv(meta, parentEnv, thisValue, args)
-    var regs = new Array(meta.registerCount)
+    var regs = new intrinsicArray(meta.registerCount)
     var code = metadata.bytecode
     async function run(start, end) {
       var pc = start
@@ -620,7 +644,7 @@ function __scriptvmRun(metadata, globalObject) {
               var enterCount = code[pc++]
               var enterSlots = []
               for (var enterIndex = 0; enterIndex < enterCount; enterIndex++) {
-                enterSlots.push(code[pc++])
+                intrinsicReflectApply(intrinsicArrayPush, enterSlots, [code[pc++]])
               }
               env = createScopeEnv(meta, env, env.thisValue, env.args, enterSlots, null)
               break
@@ -632,7 +656,7 @@ function __scriptvmRun(metadata, globalObject) {
               var replaceCount = code[pc++]
               var replaceSlots = []
               for (var replaceIndex = 0; replaceIndex < replaceCount; replaceIndex++) {
-                replaceSlots.push(code[pc++])
+                intrinsicReflectApply(intrinsicArrayPush, replaceSlots, [code[pc++]])
               }
               env = createScopeEnv(meta, env.parent, env.thisValue, env.args, replaceSlots, env)
               break
@@ -797,10 +821,10 @@ function __scriptvmRun(metadata, globalObject) {
               var argc = code[pc++]
               var argv = []
               for (var i = 0; i < argc; i++) {
-                argv.push(regs[code[pc++]])
+                intrinsicReflectApply(intrinsicArrayPush, argv, [regs[code[pc++]]])
               }
               var receiver = thisIndex >= 0 ? regs[thisIndex] : undefined
-              regs[callDst] = Reflect.apply(callFn, receiver, argv)
+              regs[callDst] = intrinsicReflectApply(callFn, receiver, argv)
               break
             }
             case OPCODES.NEW: {
@@ -809,9 +833,9 @@ function __scriptvmRun(metadata, globalObject) {
               var newArgc = code[pc++]
               var newArgs = []
               for (var j = 0; j < newArgc; j++) {
-                newArgs.push(regs[code[pc++]])
+                intrinsicReflectApply(intrinsicArrayPush, newArgs, [regs[code[pc++]]])
               }
-              regs[newDst] = Reflect.construct(ctor, newArgs)
+              regs[newDst] = intrinsicReflectConstruct(ctor, newArgs)
               break
             }
             case OPCODES.AWAIT:
@@ -834,7 +858,7 @@ function __scriptvmRun(metadata, globalObject) {
               break
             case OPCODES.ARRAY_PUSH: {
               var arr = regs[code[pc++]]
-              arr.push(regs[code[pc++]])
+              intrinsicReflectApply(intrinsicArrayPush, arr, [regs[code[pc++]]])
               break
             }
             case OPCODES.OBJECT_SET: {
@@ -864,7 +888,7 @@ function __scriptvmRun(metadata, globalObject) {
   function* executeGenerator(functionId, parentEnv, thisValue, args, newTarget, frame) {
     var meta = metadata.functions[functionId]
     var env = frame ? frame.env : createEnv(meta, parentEnv, thisValue, args)
-    var regs = frame ? frame.regs : new Array(meta.registerCount)
+    var regs = frame ? frame.regs : new intrinsicArray(meta.registerCount)
     var code = metadata.bytecode
 
     function* run(start, end) {
@@ -879,7 +903,7 @@ function __scriptvmRun(metadata, globalObject) {
               var enterCount = code[pc++]
               var enterSlots = []
               for (var enterIndex = 0; enterIndex < enterCount; enterIndex++) {
-                enterSlots.push(code[pc++])
+                intrinsicReflectApply(intrinsicArrayPush, enterSlots, [code[pc++]])
               }
               env = createScopeEnv(meta, env, env.thisValue, env.args, enterSlots, null)
               break
@@ -891,7 +915,7 @@ function __scriptvmRun(metadata, globalObject) {
               var replaceCount = code[pc++]
               var replaceSlots = []
               for (var replaceIndex = 0; replaceIndex < replaceCount; replaceIndex++) {
-                replaceSlots.push(code[pc++])
+                intrinsicReflectApply(intrinsicArrayPush, replaceSlots, [code[pc++]])
               }
               env = createScopeEnv(meta, env.parent, env.thisValue, env.args, replaceSlots, env)
               break
@@ -1054,10 +1078,10 @@ function __scriptvmRun(metadata, globalObject) {
               var argc = code[pc++]
               var argv = []
               for (var i = 0; i < argc; i++) {
-                argv.push(regs[code[pc++]])
+                intrinsicReflectApply(intrinsicArrayPush, argv, [regs[code[pc++]]])
               }
               var receiver = thisIndex >= 0 ? regs[thisIndex] : undefined
-              regs[callDst] = Reflect.apply(callFn, receiver, argv)
+              regs[callDst] = intrinsicReflectApply(callFn, receiver, argv)
               break
             }
             case OPCODES.NEW: {
@@ -1066,9 +1090,9 @@ function __scriptvmRun(metadata, globalObject) {
               var newArgc = code[pc++]
               var newArgs = []
               for (var j = 0; j < newArgc; j++) {
-                newArgs.push(regs[code[pc++]])
+                intrinsicReflectApply(intrinsicArrayPush, newArgs, [regs[code[pc++]]])
               }
-              regs[newDst] = Reflect.construct(ctor, newArgs)
+              regs[newDst] = intrinsicReflectConstruct(ctor, newArgs)
               break
             }
             case OPCODES.AWAIT:
@@ -1107,7 +1131,7 @@ function __scriptvmRun(metadata, globalObject) {
               break
             case OPCODES.ARRAY_PUSH: {
               var arr = regs[code[pc++]]
-              arr.push(regs[code[pc++]])
+              intrinsicReflectApply(intrinsicArrayPush, arr, [regs[code[pc++]]])
               break
             }
             case OPCODES.OBJECT_SET: {
@@ -1137,7 +1161,7 @@ function __scriptvmRun(metadata, globalObject) {
   async function* executeAsyncGenerator(functionId, parentEnv, thisValue, args, newTarget, frame) {
     var meta = metadata.functions[functionId]
     var env = frame ? frame.env : createEnv(meta, parentEnv, thisValue, args)
-    var regs = frame ? frame.regs : new Array(meta.registerCount)
+    var regs = frame ? frame.regs : new intrinsicArray(meta.registerCount)
     var code = metadata.bytecode
 
     async function* run(start, end) {
@@ -1152,7 +1176,7 @@ function __scriptvmRun(metadata, globalObject) {
               var enterCount = code[pc++]
               var enterSlots = []
               for (var enterIndex = 0; enterIndex < enterCount; enterIndex++) {
-                enterSlots.push(code[pc++])
+                intrinsicReflectApply(intrinsicArrayPush, enterSlots, [code[pc++]])
               }
               env = createScopeEnv(meta, env, env.thisValue, env.args, enterSlots, null)
               break
@@ -1164,7 +1188,7 @@ function __scriptvmRun(metadata, globalObject) {
               var replaceCount = code[pc++]
               var replaceSlots = []
               for (var replaceIndex = 0; replaceIndex < replaceCount; replaceIndex++) {
-                replaceSlots.push(code[pc++])
+                intrinsicReflectApply(intrinsicArrayPush, replaceSlots, [code[pc++]])
               }
               env = createScopeEnv(meta, env.parent, env.thisValue, env.args, replaceSlots, env)
               break
@@ -1327,10 +1351,10 @@ function __scriptvmRun(metadata, globalObject) {
               var argc = code[pc++]
               var argv = []
               for (var i = 0; i < argc; i++) {
-                argv.push(regs[code[pc++]])
+                intrinsicReflectApply(intrinsicArrayPush, argv, [regs[code[pc++]]])
               }
               var receiver = thisIndex >= 0 ? regs[thisIndex] : undefined
-              regs[callDst] = Reflect.apply(callFn, receiver, argv)
+              regs[callDst] = intrinsicReflectApply(callFn, receiver, argv)
               break
             }
             case OPCODES.NEW: {
@@ -1339,9 +1363,9 @@ function __scriptvmRun(metadata, globalObject) {
               var newArgc = code[pc++]
               var newArgs = []
               for (var j = 0; j < newArgc; j++) {
-                newArgs.push(regs[code[pc++]])
+                intrinsicReflectApply(intrinsicArrayPush, newArgs, [regs[code[pc++]]])
               }
-              regs[newDst] = Reflect.construct(ctor, newArgs)
+              regs[newDst] = intrinsicReflectConstruct(ctor, newArgs)
               break
             }
             case OPCODES.AWAIT:
@@ -1382,7 +1406,7 @@ function __scriptvmRun(metadata, globalObject) {
               break
             case OPCODES.ARRAY_PUSH: {
               var arr = regs[code[pc++]]
-              arr.push(regs[code[pc++]])
+              intrinsicReflectApply(intrinsicArrayPush, arr, [regs[code[pc++]]])
               break
             }
             case OPCODES.OBJECT_SET: {
