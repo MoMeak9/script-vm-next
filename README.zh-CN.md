@@ -59,6 +59,8 @@ try {
 
 `compileSource(source, options?)` 是同步 API，不读写文件，也不执行输入代码。它接受独立脚本，拒绝模块语法和没有局部绑定的 CommonJS 全局变量，返回 `{ code, artifact }`。`filename` 只用于诊断信息，不会解析或读取对应文件；`debug: true` 可附带指令调试信息。诊断位置如可用，行号和列号均从 1 开始。
 
+默认的 `runtime: 'auto'` 会在编译期分析所有已编译函数所需的指令和辅助函数，按需组装解释器。简单的 `console.log` 程序无需携带类、异步或生成器实现。排查问题时可使用 `runtime: 'full'` 保留完整解释器。两种模式使用相同字节码，并保持相同的受支持语言行为；调用方无需改写源码或配置额外构建步骤。依赖分析与边界说明见[运行时按需组装（英文）](docs/runtime-assembly.md)。
+
 CommonJS 使用方可以写 `const { compileSource } = require('script-vm-next/core')`。包中包含类型声明。根入口也导出 `compileSource`，但浏览器打包工具应使用专门的 `core` 入口，避免引入 Node 文件系统依赖。
 
 ## 文件 API：Node.js
@@ -76,7 +78,7 @@ const code = transform('./input.js', { format: 'iife' })
 
 `compile(inputPath, outputPath?, options?)` 和 `transform(inputPath, options?)` 都以文件路径作为输入。`transform` 返回生成代码字符串；`compile` 返回与源码 API 相同的 `{ code, artifact }` 结构。省略 `outputPath` 时，会根据最终格式在输入文件旁写入 `.vm.js`、`.vm.mjs` 或 `.vm.cjs` 文件；传入 `null` 则不写文件。
 
-文件 API 支持 `format: 'auto' | 'iife' | 'esm' | 'cjs'`、`bundle`（默认为 `true`）、`external: string[]` 和 `debug`。自动格式检测会结合文件扩展名与模块语法。模块加载和输出格式的当前边界见[兼容性矩阵（英文）](docs/compatibility.md)。预留的 `obfuscate` 选项尚未实现，传入后会被拒绝。
+文件 API 支持 `format: 'auto' | 'iife' | 'esm' | 'cjs'`、`runtime: 'auto' | 'full'`（默认为 `auto`）、`bundle`（默认为 `true`）、`external: string[]` 和 `debug`。自动格式检测会结合文件扩展名与模块语法。模块加载和输出格式的当前边界见[兼容性矩阵（英文）](docs/compatibility.md)。预留的 `obfuscate` 选项尚未实现，传入后会被拒绝。
 
 ## 命令行
 
@@ -88,7 +90,7 @@ node output.vm.js
 npx script-vm-next --help
 ```
 
-也支持 `transform` 子命令。选项包括 `--format auto|iife|esm|cjs`、`--no-bundle`、`--external module-a,module-b` 和 `--debug`。编译失败时返回非零退出码，并输出诊断代码；可获取源代码位置时，也会一并报告。
+也支持 `transform` 子命令。选项包括 `--format auto|iife|esm|cjs`、`--runtime auto|full`（默认为 `auto`）、`--no-bundle`、`--external module-a,module-b` 和 `--debug`。编译失败时返回非零退出码，并输出诊断代码；可获取源代码位置时，也会一并报告。
 
 ## 语言支持边界
 
@@ -130,9 +132,9 @@ pnpm demo:preview
 
 ## 架构与后续工作
 
-源代码 → 可选的 Node 模块打包 → Babel 解析与规范化 → 寄存器式 IR → 字节码 → 运行时代码生成 → 输出包装。
+源代码 → 可选的 Node 模块打包 → Babel 解析与规范化 → 寄存器式 IR → 字节码与运行时需求 → 编译期按需组装运行时 → 输出包装。
 
-从[文档导航](docs/README.md)开始阅读，索引会标明每份文档的语言。[架构概览](docs/01-architecture-overview.md)与[系列教程](docs/00-tutorial-guide.md)目前为简体中文，[兼容性矩阵](docs/compatibility.md)目前为英文。后续兼容性工作包括增加原生 JavaScript 与 VM 的差分回归测试、修复已记录的语义缺口、接入选定的 Test262 用例，以及验证实际应用代码。稳定版需要足以支撑其语言支持范围的验证证据，打包与演示页本身不能证明语言语义完整。
+从[文档导航](docs/README.md)开始阅读，索引会标明每份文档的语言。[架构概览](docs/01-architecture-overview.md)与[系列教程](docs/00-tutorial-guide.md)目前为简体中文，[兼容性矩阵](docs/compatibility.md)目前为英文。目前已接入[固定版本的 Test262 基线](docs/test262.md)，在 Node.js 20、22、24 上执行 219 个选定的 ES2015 测试文件（428 个执行变体）。后续工作包括扩大已记录的测试范围、增加原生 JavaScript 与 VM 的差分回归测试、修复已知语义缺口，以及验证实际应用代码。稳定版需要足以支撑其语言支持范围的验证证据，打包与演示页本身不能证明语言语义完整。
 
 ## 许可证
 

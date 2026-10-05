@@ -4,7 +4,14 @@ export interface CompileResult {
   code: string
   artifact: ProgramArtifact
   durationMs: number
-  stats: { bytecodeWords: number; functionCount: number }
+  stats: {
+    bytecodeWords: number
+    functionCount: number
+    runtime?: {
+      instructionCount: number
+      executionModes: Array<'sync' | 'async' | 'generator' | 'async-generator'>
+    }
+  }
 }
 
 export interface CompileFailure extends Error {

@@ -45,6 +45,7 @@ const sourceEditor = new EditorView({
       if (!update.docChanged) return;
       updateSourceSize();
       updateButtons();
+      element('runtime-details').hidden = true;
       if (!compiling) {
         element('app-status').textContent = '源码已修改，请重新编译';
         element('output-caption').textContent = compiled ? '源码已修改 · 产物待更新' : '等待编译';
@@ -95,6 +96,15 @@ function updateSourceSize(): void {
   element('source-size').textContent = formatBytes(encoder.encode(sourceEditor.state.doc.toString()).byteLength);
 }
 
+function updateRuntimeDetails(result: CompileResult): void {
+  const runtime = result.stats.runtime;
+  element('runtime-details').hidden = !runtime;
+  if (!runtime) return;
+  const labels = { sync: '同步', async: '异步', generator: '生成器', 'async-generator': '异步生成器' };
+  element('runtime-summary').textContent = ` · ${runtime.instructionCount.toLocaleString()} 类指令`;
+  element('runtime-modes').textContent = runtime.executionModes.map(mode => labels[mode]).join('、');
+}
+
 function updateButtons(): void {
   const current = Boolean(compiled && compiledSource === sourceEditor.state.doc.toString());
   compileButton.disabled = compiling;
@@ -142,6 +152,7 @@ async function compileSource(): Promise<void> {
   hideError();
   element('app-status').textContent = '正在编译…';
   element('output-caption').textContent = '编译中…';
+  element('runtime-details').hidden = true;
   updateButtons();
   try {
     const result = await compiler.compile(source);
@@ -154,6 +165,7 @@ async function compileSource(): Promise<void> {
     element('metric-bytecode').textContent = result.stats.bytecodeWords.toLocaleString();
     element('metric-functions').textContent = result.stats.functionCount.toLocaleString();
     const current = source === sourceEditor.state.doc.toString();
+    if (current) updateRuntimeDetails(result);
     element('output-caption').textContent = current ? '编译成功 · IIFE' : '源码已修改 · 产物待更新';
     element('app-status').textContent = current ? '编译完成，可以运行产物' : '源码已修改，请重新编译';
   } catch (error) {

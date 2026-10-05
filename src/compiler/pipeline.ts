@@ -1,9 +1,9 @@
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 import { bundle, detectModuleFormat, hasCJSSyntax, hasModuleSyntax } from './bundler'
-import { compileProgram } from './core-pipeline'
+import { compileProgram, resolveRuntimeMode } from './core-pipeline'
 import { CompileError, compileStep } from './diagnostics'
-import type { CompiledOutput, CompileOptions, ModuleFormat } from './types'
+import type { CompiledOutput, CompileOptions, ModuleFormat, ProgramArtifact } from './types'
 
 function defaultOutputPath(inputPath: string, format: ModuleFormat): string {
   const ext = path.extname(inputPath)
@@ -32,6 +32,7 @@ export default function compile(
   if (!options || typeof options !== 'object' || Array.isArray(options)) {
     throw new CompileError('Options must be an object.', { code: 'INVALID_OPTION', stage: 'input' })
   }
+  const runtime = resolveRuntimeMode(options.runtime, sourceFile)
   if (options.obfuscate) {
     throw new CompileError('obfuscate is reserved and is not implemented.', {
       code: 'UNSUPPORTED_FEATURE', stage: 'input', filename: sourceFile,
@@ -45,6 +46,8 @@ export default function compile(
   let exportNames: string[] = []
   let notifyIdentifier: string | undefined
   let exportsIdentifier: string | undefined
+  let hostImports: ProgramArtifact['hostImports']
+  let hostExports: ProgramArtifact['hostExports']
   const shouldBundle = options.bundle !== false
 
   if (shouldBundle && (
@@ -60,11 +63,13 @@ export default function compile(
     exportNames = bundled.entryExports
     notifyIdentifier = bundled.notifyIdentifier
     exportsIdentifier = bundled.exportsIdentifier
+    hostImports = bundled.hostImports
+    hostExports = bundled.hostExports
   }
 
   const output = compileProgram(codeToCompile, {
-    filename: sourceFile, format, debug: options.debug,
-    exportNames, exportsIdentifier, notifyIdentifier,
+    filename: sourceFile, format, debug: options.debug, runtime,
+    exportNames, exportsIdentifier, notifyIdentifier, hostImports, hostExports,
   })
 
   if (typeof outputFile === 'string') {

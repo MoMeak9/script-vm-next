@@ -45,9 +45,25 @@ describe('cli', () => {
     expect(execFileSync(process.execPath, [cliPath, '--version'], { encoding: 'utf8' }).trim()).toBe(packageJson.version)
   })
 
+  it.each([{ command: [] }, { command: ['transform'] }])('assembles auto and full runtimes through CLI arguments $command', ({ command }) => {
+    const dir = makeTempDir('script-vm-next-cli-runtime-')
+    writeTempFile(dir, 'input.js', '__result = 6 * 7;')
+    const outputs = ['auto', 'full'].map(runtime => {
+      const output = `${runtime}.vm.js`
+      execFileSync(process.execPath, [cliPath, ...command, 'input.js', '-o', output, '--runtime', runtime], {
+        cwd: dir, stdio: 'pipe',
+      })
+      const code = fs.readFileSync(path.join(dir, output), 'utf8')
+      expect(runIifeCode(code).__result).toBe(42)
+      return code
+    })
+    expect(outputs[0].length).toBeLessThan(outputs[1].length)
+  })
+
   it.each([
     ['const broken = ;', [], 'SYNTAX_ERROR'],
     ['var n = 1;', ['--format', 'invalid'], 'INVALID_FORMAT'],
+    ['var n = 1;', ['--runtime', 'invalid'], 'INVALID_OPTION'],
   ])('reports concise diagnostics with nonzero exit status: %s', (source, args, code) => {
     const dir = makeTempDir('script-vm-next-cli-errors-')
     writeTempFile(dir, 'input.js', source)

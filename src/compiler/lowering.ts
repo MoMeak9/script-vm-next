@@ -5,14 +5,15 @@ interface LoopLabels {
   breakLabel: string
   scopeDepth: number
   continueLabel: string
-  label?: string
+  labels?: string[]
 }
 
 interface BreakableLabels {
+  labelOnly?: boolean
   breakLabel: string
   scopeDepth: number
   continueLabel?: string
-  label?: string
+  labels?: string[]
 }
 
 interface ScopeBinding {
@@ -53,6 +54,10 @@ class FunctionBuilder {
   loopStack: LoopLabels[] = []
   breakStack: BreakableLabels[] = []
   params = 0
+  parameterSlots: number[] = []
+  simpleParameters = true
+  argumentsSlot?: number
+  annexBFunctions = new WeakSet<t.FunctionDeclaration>()
   nestingDepth: number
 
   constructor(
@@ -75,7 +80,7 @@ class FunctionBuilder {
     this.nestingDepth = parentFunction ? parentFunction.nestingDepth + 1 : 0
     this.rootScope = new ScopeFrame(this, outerScope)
     for (const param of params) {
-      this.declareBinding(this.rootScope, param, 'param')
+      this.parameterSlots.push(this.declareBinding(this.rootScope, param, 'param'))
       this.params++
     }
   }
@@ -129,6 +134,9 @@ class FunctionBuilder {
       id: this.id,
       name: this.name,
       params: this.params,
+      parameterSlots: [...this.parameterSlots],
+      simpleParameters: this.simpleParameters,
+      argumentsSlot: this.argumentsSlot,
       slotNames: [...this.slotNames],
       slotKinds: [...this.slotKinds],
       instructions: [...this.instructions],
@@ -145,7 +153,6 @@ class FunctionBuilder {
 
 class ModuleLowerer {
   functions: FunctionBuilder[] = []
-  pendingLabel?: string
 
   constructor(private readonly exportsIdentifier = '__exports') {}
 
@@ -214,8 +221,13 @@ class ModuleLowerer {
       method: Boolean(node.extra?.scriptVmMethod),
       length: typeof node.extra?.vmFunctionLength === 'number' ? node.extra.vmFunctionLength : undefined,
     })
+    builder.simpleParameters = !node.extra?.vmNonSimpleParameters
     this.predeclareFunctionBindings(node.body.body, builder)
     this.predeclareLexicalBindings(node.body.body, builder, builder.rootScope)
+    const argumentsBinding = builder.rootScope.bindings.get('arguments')
+    if (!node.extra?.scriptVmArrow && (!argumentsBinding || argumentsBinding.kind === 'var' || argumentsBinding.kind === 'function')) {
+      builder.argumentsSlot = builder.declareBinding(builder.rootScope, 'arguments', 'var')
+    }
     this.emitHoistedFunctions(node.body.body, builder, builder.rootScope)
     for (const statement of node.body.body) {
       if (statement.extra?.vmParameterPreludeEnd) builder.emit({ op: 'parameter_end' })
@@ -233,89 +245,89 @@ class ModuleLowerer {
   }
 
   private predeclareFunctionBindings(statements: t.Statement[], builder: FunctionBuilder) {
-    const visitStatement = (statement: t.Statement) => {
+    const lexicalNames = (body: t.Statement[]): string[] => body.flatMap(statement => {
+      if (t.isTryStatement(statement) && statement.block.extra?.vmTransparentScope) {
+        return lexicalNames(statement.block.body)
+      }
+      if (t.isVariableDeclaration(statement) && statement.kind !== 'var') {
+        return statement.declarations.flatMap(declaration => Object.keys(t.getBindingIdentifiers(declaration.id)))
+      }
+      return []
+    })
+    const rootBlocked = new Set([
+      ...lexicalNames(statements),
+      ...builder.parameterSlots.map(slot => builder.slotNames[slot]),
+    ])
+    const visitBody = (body: t.Statement[], nested: boolean, blocked: Set<string>) => {
+      const nextBlocked = new Set([...blocked, ...lexicalNames(body)])
+      for (const statement of body) visitStatement(statement, nested, nextBlocked)
+    }
+    const visitStatement = (statement: t.Statement, nested: boolean, blocked: Set<string>) => {
       if (t.isFunctionDeclaration(statement)) {
         if (statement.id) {
-          builder.declareBinding(builder.rootScope, statement.id.name, 'function')
+          if (!nested) builder.declareBinding(builder.rootScope, statement.id.name, 'function')
+          else if (!builder.strict && !statement.async && !statement.generator && !blocked.has(statement.id.name)) {
+            builder.declareBinding(builder.rootScope, statement.id.name, 'var')
+            builder.annexBFunctions.add(statement)
+          }
         }
         return
       }
-
       if (t.isVariableDeclaration(statement) && statement.kind === 'var') {
         for (const declaration of statement.declarations) {
-          if (!t.isIdentifier(declaration.id)) {
-            throw new Error('Destructuring declarations are not supported in script-vm-next v0.1')
-          }
+          if (!t.isIdentifier(declaration.id)) throw new Error('Destructuring declaration was not normalized')
           builder.declareBinding(builder.rootScope, declaration.id.name, 'var')
         }
         return
       }
-
       if (t.isBlockStatement(statement)) {
-        statement.body.forEach(visitStatement)
-        return
-      }
-
-      if (t.isIfStatement(statement)) {
-        visitNestedStatement(statement.consequent)
-        if (statement.alternate) visitNestedStatement(statement.alternate)
-        return
-      }
-
-      if (t.isTryStatement(statement)) {
-        statement.block.body.forEach(visitStatement)
+        visitBody(statement.body, statement.extra?.vmTransparentScope ? nested : true, blocked)
+      } else if (t.isIfStatement(statement)) {
+        visitStatement(statement.consequent, true, blocked)
+        if (statement.alternate) visitStatement(statement.alternate, true, blocked)
+      } else if (t.isTryStatement(statement)) {
+        visitStatement(statement.block, nested, blocked)
         if (statement.handler) {
-          statement.handler.body.body.forEach(visitStatement)
+          // Catch parameters block Annex B var synthesis in their catch body.
+          const catchBlocked = new Set([...blocked, ...Object.keys(t.getBindingIdentifiers(statement.handler.param))])
+          visitBody(statement.handler.body.body, true, catchBlocked)
         }
-        if (statement.finalizer) {
-          statement.finalizer.body.forEach(visitStatement)
+        if (statement.finalizer) visitStatement(statement.finalizer, nested, blocked)
+      } else if (t.isWhileStatement(statement) || t.isDoWhileStatement(statement)) {
+        visitStatement(statement.body, true, blocked)
+      } else if (t.isForStatement(statement)) {
+        let loopBlocked = blocked
+        if (statement.init && t.isVariableDeclaration(statement.init)) {
+          if (statement.init.kind === 'var') visitStatement(statement.init, nested, blocked)
+          else loopBlocked = new Set([...blocked, ...lexicalNames([statement.init])])
         }
-        return
-      }
-
-      if (t.isWhileStatement(statement) || t.isDoWhileStatement(statement)) {
-        visitNestedStatement(statement.body)
-        return
-      }
-
-      if (t.isForStatement(statement)) {
-        if (statement.init && t.isVariableDeclaration(statement.init) && statement.init.kind === 'var') {
-          visitStatement(statement.init as t.Statement)
-        }
-        visitNestedStatement(statement.body)
-        return
-      }
-
-      if (t.isSwitchStatement(statement)) {
-        this.collectSwitchStatements(statement.cases).forEach(visitStatement)
-        return
-      }
-
-      if (t.isLabeledStatement(statement)) {
-        visitStatement(statement.body)
-        return
+        visitStatement(statement.body, true, loopBlocked)
+      } else if (t.isSwitchStatement(statement)) {
+        visitBody(this.collectSwitchStatements(statement.cases), true, blocked)
+      } else if (t.isLabeledStatement(statement)) {
+        visitStatement(statement.body, nested, blocked)
       }
     }
-
-    const visitNestedStatement = (statement: t.Statement) => {
-      if (t.isBlockStatement(statement)) {
-        statement.body.forEach(visitStatement)
-      } else {
-        visitStatement(statement)
-      }
-    }
-
-    statements.forEach(visitStatement)
+    visitBody(statements, false, rootBlocked)
   }
 
   private predeclareLexicalBindings(statements: t.Statement[], builder: FunctionBuilder, scope: ScopeFrame) {
     for (const statement of statements) {
+      if (t.isLabeledStatement(statement)) {
+        const body = statement.body
+        this.predeclareLexicalBindings(t.isBlockStatement(body) && body.extra?.vmTransparentScope ? body.body : [body], builder, scope)
+        continue
+      }
+      if (t.isBlockStatement(statement) && statement.extra?.vmTransparentScope) {
+        this.predeclareLexicalBindings(statement.body, builder, scope)
+        continue
+      }
       if (t.isTryStatement(statement) && statement.block.extra?.vmTransparentScope) {
         this.predeclareLexicalBindings(statement.block.body, builder, scope)
         continue
       }
-      if (t.isSwitchStatement(statement)) {
-        this.predeclareLexicalBindings(this.collectSwitchStatements(statement.cases), builder, scope)
+      if (t.isFunctionDeclaration(statement) && scope !== builder.rootScope && statement.id) {
+        builder.declareBinding(scope, statement.id.name, 'let')
         continue
       }
       if (!t.isVariableDeclaration(statement) || statement.kind === 'var') {
@@ -335,32 +347,14 @@ class ModuleLowerer {
 
   private emitHoistedFunctions(statements: t.Statement[], builder: FunctionBuilder, scope: ScopeFrame) {
     const hoisted: t.FunctionDeclaration[] = []
-
     const collect = (statement: t.Statement) => {
-      if (t.isFunctionDeclaration(statement)) {
-        hoisted.push(statement)
-        return
-      }
-      if (t.isBlockStatement(statement)) {
-        statement.body.forEach(collect)
-      } else if (t.isIfStatement(statement)) {
-        collectNested(statement.consequent)
-        if (statement.alternate) collectNested(statement.alternate)
-      } else if (t.isWhileStatement(statement) || t.isDoWhileStatement(statement)) {
-        collectNested(statement.body)
-      } else if (t.isForStatement(statement)) {
-        collectNested(statement.body)
+      if (t.isFunctionDeclaration(statement)) hoisted.push(statement)
+      else if (t.isLabeledStatement(statement)) collect(statement.body)
+      else if (t.isBlockStatement(statement) && statement.extra?.vmTransparentScope) statement.body.forEach(collect)
+      else if (t.isTryStatement(statement) && statement.block.extra?.vmTransparentScope) {
+        statement.block.body.forEach(collect)
       }
     }
-
-    const collectNested = (statement: t.Statement) => {
-      if (t.isBlockStatement(statement)) {
-        statement.body.forEach(collect)
-      } else {
-        collect(statement)
-      }
-    }
-
     statements.forEach(collect)
 
     for (const fn of hoisted) {
@@ -371,12 +365,24 @@ class ModuleLowerer {
       }
       const reg = builder.allocReg()
       builder.emit({ op: 'make_function', dst: reg, functionId })
-      builder.emit({ op: 'store_slot', depth: binding.depth, slot: binding.slot, src: reg })
+      if (scope === builder.rootScope) {
+        builder.emit({ op: 'store_slot', strict: builder.strict, depth: binding.depth, slot: binding.slot, src: reg })
+      } else {
+        builder.emit({ op: 'init_slot', depth: binding.depth, slot: binding.slot, src: reg })
+      }
     }
   }
 
-  private compileStatement(statement: t.Statement, builder: FunctionBuilder, scope: ScopeFrame) {
+  private compileStatement(statement: t.Statement, builder: FunctionBuilder, scope: ScopeFrame, statementLabels: string[] = []) {
     if (t.isFunctionDeclaration(statement)) {
+      if (builder.annexBFunctions.has(statement) && statement.id) {
+        const lexical = builder.resolve(scope, statement.id.name)
+        const outer = builder.rootScope.bindings.get(statement.id.name)!
+        const value = builder.allocReg()
+        if (lexical.kind !== 'slot') throw new Error('Missing block function binding')
+        builder.emit({ op: 'load_slot', dst: value, depth: lexical.depth, slot: lexical.slot })
+        builder.emit({ op: 'store_slot', depth: scope.runtimeDepth - builder.rootScope.runtimeDepth, slot: outer.slot, src: value })
+      }
       return
     }
 
@@ -389,6 +395,7 @@ class ModuleLowerer {
       this.predeclareLexicalBindings(statement.body, builder, blockScope)
       if (blockScope.localSlots.length > 0) {
         builder.emit({ op: 'enter_scope', slots: [...blockScope.localSlots] })
+        this.emitHoistedFunctions(statement.body, builder, blockScope)
         statement.body.forEach((item) => this.compileStatement(item, builder, blockScope))
         builder.emit({ op: 'leave_scope' })
       } else {
@@ -414,7 +421,7 @@ class ModuleLowerer {
         if (declaration.init) {
           const init = this.compileExpression(declaration.init, builder, scope)
           if (statement.kind === 'var') {
-            builder.emit({ op: 'store_slot', depth: binding.depth, slot: binding.slot, src: init })
+            builder.emit({ op: 'store_slot', strict: builder.strict, depth: binding.depth, slot: binding.slot, src: init })
           } else {
             builder.emit({ op: 'init_slot', depth: binding.depth, slot: binding.slot, src: init })
           }
@@ -441,11 +448,11 @@ class ModuleLowerer {
       const endLabel = builder.label('if_end')
       const test = this.compileExpression(statement.test, builder, scope)
       builder.emit({ op: 'jump_if_false', condition: test, target: alternateLabel })
-      this.compileStatement(statement.consequent, builder, scope)
+      this.compileStatement(t.isFunctionDeclaration(statement.consequent) ? t.blockStatement([statement.consequent]) : statement.consequent, builder, scope)
       builder.emit({ op: 'jump', target: endLabel })
       builder.emit({ op: 'label', name: alternateLabel })
       if (statement.alternate) {
-        this.compileStatement(statement.alternate, builder, scope)
+        this.compileStatement(t.isFunctionDeclaration(statement.alternate) ? t.blockStatement([statement.alternate]) : statement.alternate, builder, scope)
       }
       builder.emit({ op: 'label', name: endLabel })
       return
@@ -459,9 +466,8 @@ class ModuleLowerer {
       const test = this.compileExpression(statement.test, builder, scope)
       builder.emit({ op: 'jump_if_false', condition: test, target: endLabel })
       builder.emit({ op: 'label', name: bodyLabel })
-      const whileLabel = this.pendingLabel; this.pendingLabel = undefined
-      builder.loopStack.push({ breakLabel: endLabel, continueLabel: testLabel, label: whileLabel, scopeDepth: scope.runtimeDepth - builder.rootScope.runtimeDepth })
-      builder.breakStack.push({ breakLabel: endLabel, continueLabel: testLabel, label: whileLabel, scopeDepth: scope.runtimeDepth - builder.rootScope.runtimeDepth })
+      builder.loopStack.push({ breakLabel: endLabel, continueLabel: testLabel, labels: statementLabels, scopeDepth: scope.runtimeDepth - builder.rootScope.runtimeDepth })
+      builder.breakStack.push({ breakLabel: endLabel, continueLabel: testLabel, labels: statementLabels, scopeDepth: scope.runtimeDepth - builder.rootScope.runtimeDepth })
       this.compileStatement(statement.body, builder, scope)
       builder.loopStack.pop()
       builder.breakStack.pop()
@@ -476,9 +482,8 @@ class ModuleLowerer {
       const endLabel = builder.label('do_end')
 
       builder.emit({ op: 'label', name: bodyLabel })
-      const doLabel = this.pendingLabel; this.pendingLabel = undefined
-      builder.loopStack.push({ breakLabel: endLabel, continueLabel: testLabel, label: doLabel, scopeDepth: scope.runtimeDepth - builder.rootScope.runtimeDepth })
-      builder.breakStack.push({ breakLabel: endLabel, continueLabel: testLabel, label: doLabel, scopeDepth: scope.runtimeDepth - builder.rootScope.runtimeDepth })
+      builder.loopStack.push({ breakLabel: endLabel, continueLabel: testLabel, labels: statementLabels, scopeDepth: scope.runtimeDepth - builder.rootScope.runtimeDepth })
+      builder.breakStack.push({ breakLabel: endLabel, continueLabel: testLabel, labels: statementLabels, scopeDepth: scope.runtimeDepth - builder.rootScope.runtimeDepth })
       this.compileStatement(statement.body, builder, scope)
       builder.loopStack.pop()
       builder.breakStack.pop()
@@ -520,9 +525,8 @@ class ModuleLowerer {
         const test = this.compileExpression(statement.test, builder, loopScope)
         builder.emit({ op: 'jump_if_false', condition: test, target: endLabel })
       }
-      const forLabel = this.pendingLabel; this.pendingLabel = undefined
-      builder.loopStack.push({ breakLabel: endLabel, continueLabel: updateLabel, label: forLabel, scopeDepth: loopScope.runtimeDepth - builder.rootScope.runtimeDepth })
-      builder.breakStack.push({ breakLabel: endLabel, continueLabel: updateLabel, label: forLabel, scopeDepth: loopScope.runtimeDepth - builder.rootScope.runtimeDepth })
+      builder.loopStack.push({ breakLabel: endLabel, continueLabel: updateLabel, labels: statementLabels, scopeDepth: loopScope.runtimeDepth - builder.rootScope.runtimeDepth })
+      builder.breakStack.push({ breakLabel: endLabel, continueLabel: updateLabel, labels: statementLabels, scopeDepth: loopScope.runtimeDepth - builder.rootScope.runtimeDepth })
       this.compileStatement(statement.body, builder, loopScope)
       builder.loopStack.pop()
       builder.breakStack.pop()
@@ -545,12 +549,12 @@ class ModuleLowerer {
       if (statement.label) {
         let target: BreakableLabels | undefined
         for (let i = builder.breakStack.length - 1; i >= 0; i--) {
-          if (builder.breakStack[i].label === statement.label.name) { target = builder.breakStack[i]; break }
+          if (builder.breakStack[i].labels?.includes(statement.label.name)) { target = builder.breakStack[i]; break }
         }
         if (!target) throw new Error(`Unknown label: ${statement.label.name}`)
         builder.emit({ op: 'abrupt_jump', target: target.breakLabel, scopeDepth: target.scopeDepth })
       } else {
-        const breakable = builder.breakStack[builder.breakStack.length - 1]
+        const breakable = [...builder.breakStack].reverse().find((target) => !target.labelOnly)
         if (!breakable) throw new Error('break statement is only supported inside loops')
         builder.emit({ op: 'abrupt_jump', target: breakable.breakLabel, scopeDepth: breakable.scopeDepth })
       }
@@ -561,7 +565,7 @@ class ModuleLowerer {
       if (statement.label) {
         let target: LoopLabels | undefined
         for (let i = builder.loopStack.length - 1; i >= 0; i--) {
-          if (builder.loopStack[i].label === statement.label.name) { target = builder.loopStack[i]; break }
+          if (builder.loopStack[i].labels?.includes(statement.label.name)) { target = builder.loopStack[i]; break }
         }
         if (!target) throw new Error(`Unknown label: ${statement.label.name}`)
         builder.emit({ op: 'abrupt_jump', target: target.continueLabel, scopeDepth: target.scopeDepth })
@@ -625,6 +629,7 @@ class ModuleLowerer {
         this.predeclareLexicalBindings(statement.handler.body.body, builder, catchBodyScope)
         if (catchBodyScope.localSlots.length > 0) {
           builder.emit({ op: 'enter_scope', slots: [...catchBodyScope.localSlots] })
+          this.emitHoistedFunctions(statement.handler.body.body, builder, catchBodyScope)
           statement.handler.body.body.forEach((item) => this.compileStatement(item, builder, catchBodyScope))
           builder.emit({ op: 'leave_scope' })
         } else {
@@ -654,8 +659,10 @@ class ModuleLowerer {
       // Enter scope BEFORE tests so that all case-label jumps land inside it
       if (hasLexicalScope) {
         builder.emit({ op: 'enter_scope', slots: [...switchScope.localSlots] })
+        this.emitHoistedFunctions(this.collectSwitchStatements(statement.cases), builder, switchScope)
       }
 
+      const activeScope = hasLexicalScope ? switchScope : scope
       const caseLabels = statement.cases.map(() => builder.label('switch_case'))
       const defaultIndex = statement.cases.findIndex((c) => c.test === null)
       const defaultLabel = defaultIndex >= 0 ? caseLabels[defaultIndex] : cleanupLabel
@@ -664,7 +671,7 @@ class ModuleLowerer {
       for (let i = 0; i < statement.cases.length; i++) {
         const switchCase = statement.cases[i]
         if (!switchCase.test) continue
-        const caseValue = this.compileExpression(switchCase.test, builder, switchScope)
+        const caseValue = this.compileExpression(switchCase.test, builder, activeScope)
         const matches = this.binary('===', discriminant, caseValue, builder)
         const nextTestLabel = builder.label('switch_next')
         builder.emit({ op: 'jump_if_false', condition: matches, target: nextTestLabel })
@@ -674,12 +681,11 @@ class ModuleLowerer {
       builder.emit({ op: 'jump', target: defaultLabel })
 
       // Emit case bodies
-      const switchLabel = this.pendingLabel; this.pendingLabel = undefined
-      builder.breakStack.push({ breakLabel: cleanupLabel, label: switchLabel, scopeDepth: (hasLexicalScope ? switchScope : scope).runtimeDepth - builder.rootScope.runtimeDepth })
+      builder.breakStack.push({ breakLabel: cleanupLabel, labels: statementLabels, scopeDepth: (hasLexicalScope ? switchScope : scope).runtimeDepth - builder.rootScope.runtimeDepth })
       for (let i = 0; i < statement.cases.length; i++) {
         builder.emit({ op: 'label', name: caseLabels[i] })
         for (const consequent of statement.cases[i].consequent) {
-          this.compileStatement(consequent, builder, switchScope)
+          this.compileStatement(consequent, builder, activeScope)
         }
       }
       builder.breakStack.pop()
@@ -693,17 +699,20 @@ class ModuleLowerer {
     }
 
     if (t.isLabeledStatement(statement)) {
-      const labelName = statement.label.name
-      if (t.isBlockStatement(statement.body)) {
+      const labels: string[] = []
+      let body: t.Statement = statement
+      while (t.isLabeledStatement(body)) {
+        labels.push(body.label.name)
+        body = body.body
+      }
+      if (t.isLoop(body) || t.isSwitchStatement(body)) {
+        this.compileStatement(body, builder, scope, labels)
+      } else {
         const endLabel = builder.label('labeled_end')
-        builder.breakStack.push({ breakLabel: endLabel, label: labelName, scopeDepth: scope.runtimeDepth - builder.rootScope.runtimeDepth })
-        this.compileStatement(statement.body, builder, scope)
+        builder.breakStack.push({ labelOnly: true, breakLabel: endLabel, labels, scopeDepth: scope.runtimeDepth - builder.rootScope.runtimeDepth })
+        this.compileStatement(body, builder, scope)
         builder.breakStack.pop()
         builder.emit({ op: 'label', name: endLabel })
-      } else {
-        this.pendingLabel = labelName
-        this.compileStatement(statement.body, builder, scope)
-        this.pendingLabel = undefined
       }
       return
     }
@@ -716,6 +725,21 @@ class ModuleLowerer {
   }
 
   private compileExpression(expression: t.Expression, builder: FunctionBuilder, scope: ScopeFrame): number {
+    if (t.isDoExpression(expression) && expression.body.extra?.vmClassEvaluation) {
+      const statements = expression.body.body
+      const classScope = builder.createScope(scope)
+      this.predeclareLexicalBindings(statements, builder, classScope)
+      builder.emit({ op: 'enter_scope', slots: [...classScope.localSlots] })
+      const previousStrict = builder.strict
+      builder.strict = true
+      for (const statement of statements.slice(0, -1)) this.compileStatement(statement, builder, classScope)
+      const result = statements[statements.length - 1]
+      if (!t.isExpressionStatement(result)) throw new Error('Internal class evaluation must end in a value')
+      const value = this.compileExpression(result.expression, builder, classScope)
+      builder.strict = previousStrict
+      builder.emit({ op: 'leave_scope' })
+      return value
+    }
     if (t.isDoExpression(expression) && expression.body.extra?.vmTransparentScope) {
       const statements = expression.body.body
       this.predeclareFunctionBindings(statements, builder)
@@ -738,7 +762,7 @@ class ModuleLowerer {
     if (t.isIdentifier(expression)) {
       const binding = builder.resolve(scope, expression.name)
       if (binding.kind === 'global' && expression.name === 'undefined') return this.loadUndefined(builder)
-      if (expression.extra?.vmIntrinsicArguments || (binding.kind === 'global' && expression.name === 'arguments' && builder.parentFunction)) {
+      if (expression.extra?.vmIntrinsicArguments) {
         const dst = builder.allocReg()
         builder.emit({ op: 'load_arguments', dst })
         return dst
@@ -770,9 +794,21 @@ class ModuleLowerer {
     }
 
     if (t.isFunctionExpression(expression)) {
-      const functionId = this.compileNestedFunction(expression, builder, scope)
+      // A named expression has an immutable private environment outside its
+      // parameter/body environment. Parameters and body vars can shadow it.
+      const nameScope = expression.id ? builder.createScope(scope) : scope
+      let nameSlot: number | undefined
+      if (expression.id) {
+        nameSlot = builder.declareBinding(nameScope, expression.id.name, 'function-name')
+        builder.emit({ op: 'enter_scope', slots: [nameSlot] })
+      }
+      const functionId = this.compileNestedFunction(expression, builder, nameScope)
       const dst = builder.allocReg()
       builder.emit({ op: 'make_function', dst, functionId })
+      if (nameSlot !== undefined) {
+        builder.emit({ op: 'init_slot', depth: 0, slot: nameSlot, src: dst })
+        builder.emit({ op: 'leave_scope' })
+      }
       return dst
     }
 
@@ -851,7 +887,7 @@ class ModuleLowerer {
           const length = builder.allocReg()
           builder.emit({ op: 'get_prop', dst: length, object: dst, property })
           const nextLength = this.binary('+', length, this.loadLiteral(1, builder), builder)
-          builder.emit({ op: 'set_prop', dst: builder.allocReg(), object: dst, property, value: nextLength })
+          builder.emit({ op: 'set_prop', strict: builder.strict, dst: builder.allocReg(), object: dst, property, value: nextLength })
           continue
         }
         if (t.isSpreadElement(element)) {
@@ -891,7 +927,7 @@ class ModuleLowerer {
     if (t.isUnaryExpression(expression)) {
       if (expression.operator === 'typeof' && t.isIdentifier(expression.argument)) {
         const binding = builder.resolve(scope, expression.argument.name)
-        if (binding.kind === 'global' && !(expression.argument.name === 'arguments' && builder.parentFunction)) {
+        if (binding.kind === 'global') {
           const dst = builder.allocReg()
           builder.emit({ op: 'typeof_global', dst, name: binding.name })
           return dst
@@ -904,7 +940,7 @@ class ModuleLowerer {
             ? this.compileExpression(expression.argument.property as t.Expression, builder, scope)
             : this.loadLiteral((expression.argument.property as t.Identifier).name, builder)
           const dst = builder.allocReg()
-          builder.emit({ op: 'delete_prop', dst, object, property })
+          builder.emit({ op: 'delete_prop', strict: builder.strict, dst, object, property })
           return dst
         }
         // delete on non-member (identifier, literal, etc.) — evaluate for side effects, return true
@@ -1053,9 +1089,9 @@ class ModuleLowerer {
       const binding = builder.resolve(scope, left.name)
       const value = this.compileExpression(right, builder, scope)
       if (binding.kind === 'slot') {
-        builder.emit({ op: 'store_slot', depth: binding.depth, slot: binding.slot, src: value })
+        builder.emit({ op: 'store_slot', strict: builder.strict, depth: binding.depth, slot: binding.slot, src: value })
       } else {
-        builder.emit({ op: 'store_global', name: binding.name, src: value })
+        builder.emit({ op: 'store_global', strict: builder.strict, name: binding.name, src: value })
       }
       return value
     }
@@ -1068,7 +1104,7 @@ class ModuleLowerer {
       // property-key coercion) until after the RHS has been evaluated.
       const value = this.compileExpression(right, builder, scope)
       const dst = builder.allocReg()
-      builder.emit({ op: 'set_prop', dst, object, property, value })
+      builder.emit({ op: 'set_prop', strict: builder.strict, dst, object, property, value })
       return dst
     }
     throw new Error('Unsupported assignment target')
@@ -1106,9 +1142,9 @@ class ModuleLowerer {
         const value = this.compileExpression(expression.right, builder, scope)
         const binding = builder.resolve(scope, expression.left.name)
         if (binding.kind === 'slot') {
-          builder.emit({ op: 'store_slot', depth: binding.depth, slot: binding.slot, src: value })
+          builder.emit({ op: 'store_slot', strict: builder.strict, depth: binding.depth, slot: binding.slot, src: value })
         } else {
-          builder.emit({ op: 'store_global', name: binding.name, src: value })
+          builder.emit({ op: 'store_global', strict: builder.strict, name: binding.name, src: value })
         }
         builder.emit({ op: 'move', dst, src: value })
         builder.emit({ op: 'label', name: endLabel })
@@ -1119,9 +1155,9 @@ class ModuleLowerer {
       const result = this.binary(baseOp, currentValue, value, builder)
       const binding = builder.resolve(scope, expression.left.name)
       if (binding.kind === 'slot') {
-        builder.emit({ op: 'store_slot', depth: binding.depth, slot: binding.slot, src: result })
+        builder.emit({ op: 'store_slot', strict: builder.strict, depth: binding.depth, slot: binding.slot, src: result })
       } else {
-        builder.emit({ op: 'store_global', name: binding.name, src: result })
+        builder.emit({ op: 'store_global', strict: builder.strict, name: binding.name, src: result })
       }
       return result
     }
@@ -1152,7 +1188,7 @@ class ModuleLowerer {
         }
 
         const value = this.compileExpression(expression.right, builder, scope)
-        builder.emit({ op: 'set_prop', dst, object, property, value })
+        builder.emit({ op: 'set_prop', strict: builder.strict, dst, object, property, value })
         builder.emit({ op: 'label', name: endLabel })
         return dst
       }
@@ -1160,7 +1196,7 @@ class ModuleLowerer {
       const value = this.compileExpression(expression.right, builder, scope)
       const result = this.binary(baseOp, currentValue, value, builder)
       const dst = builder.allocReg()
-      builder.emit({ op: 'set_prop', dst, object, property, value: result })
+      builder.emit({ op: 'set_prop', strict: builder.strict, dst, object, property, value: result })
       return dst
     }
 
@@ -1174,9 +1210,9 @@ class ModuleLowerer {
       const updated = this.unary(expression.operator, current, builder)
       const binding = builder.resolve(scope, expression.argument.name)
       if (binding.kind === 'slot') {
-        builder.emit({ op: 'store_slot', depth: binding.depth, slot: binding.slot, src: updated })
+        builder.emit({ op: 'store_slot', strict: builder.strict, depth: binding.depth, slot: binding.slot, src: updated })
       } else {
-        builder.emit({ op: 'store_global', name: binding.name, src: updated })
+        builder.emit({ op: 'store_global', strict: builder.strict, name: binding.name, src: updated })
       }
       return expression.prefix ? updated : current
     }
@@ -1191,7 +1227,7 @@ class ModuleLowerer {
       const current = this.unary('to_numeric', value, builder)
       const updated = this.unary(expression.operator, current, builder)
       const setDst = builder.allocReg()
-      builder.emit({ op: 'set_prop', dst: setDst, object, property, value: updated })
+      builder.emit({ op: 'set_prop', strict: builder.strict, dst: setDst, object, property, value: updated })
       return expression.prefix ? updated : current
     }
 

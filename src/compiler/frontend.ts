@@ -2,6 +2,7 @@ import * as parser from '@babel/parser'
 import traverseModule from '@babel/traverse'
 import * as t from '@babel/types'
 import { normalizeFunctionParameters } from './parameter-normalization'
+import { inferFunctionNames } from './named-evaluation'
 
 // Babel publishes CommonJS. Native ESM and browser bundlers may expose its
 // callable default one level below the module's default export.
@@ -40,7 +41,7 @@ function classHelper(source: string, names: string[]): t.Statement[] {
   traverse(ast, {
     Identifier(path) {
       if (names.includes(path.node.name)) path.node.name = classLocal(path.node.name).name
-      else if (['Object', 'Reflect', 'ReferenceError', 'TypeError', 'PropertyKey'].includes(path.node.name)) {
+      else if (['Object', 'Reflect', 'ReferenceError', 'TypeError', 'PropertyKey', 'FunctionName'].includes(path.node.name)) {
         path.node.name = classIntrinsic(path.node.name as 'Object').name
       }
     },
@@ -67,8 +68,8 @@ function transformSuperCalls(
   const home = () => isStatic ? t.cloneNode(classId) : t.memberExpression(t.cloneNode(classId), t.identifier('prototype'))
   const superRef = (member: t.MemberExpression) => t.memberExpression(
     t.callExpression(classLocal('superRef'), [
-      home(), member.computed ? member.property as t.Expression
-        : t.stringLiteral((member.property as t.Identifier).name), receiver(),
+      home(), receiver(), member.computed ? member.property as t.Expression
+        : t.stringLiteral((member.property as t.Identifier).name),
     ]),
     t.identifier('value')
   )
@@ -77,14 +78,48 @@ function transformSuperCalls(
     Function(path) {
       if (path.node !== root && !path.isArrowFunctionExpression()) path.skip()
     },
-    Class(path) { path.skip() },
+    Class(path) {
+      // Heritage and computed keys belong to the enclosing lexical context;
+      // method bodies and field initializers belong to the nested class.
+      const expressions: { get(): t.Expression; set(value: t.Expression): void }[] = []
+      if (path.node.superClass) expressions.push({
+        get: () => path.node.superClass as t.Expression,
+        set: value => { path.node.superClass = value },
+      })
+      for (const member of path.node.body.body) {
+        if ('computed' in member && member.computed && 'key' in member) expressions.push({
+          get: () => member.key as t.Expression,
+          set: value => { member.key = value },
+        })
+      }
+      for (const expression of expressions) {
+        const statement = t.expressionStatement(expression.get())
+        const statements = [statement]
+        transformSuperCalls(statements, classId, isStatic, derivedConstructor)
+        expression.set((statements[0] as t.ExpressionStatement).expression)
+      }
+      path.skip()
+    },
+    UnaryExpression(path) {
+      const argument = path.node.argument
+      if (path.node.operator !== 'delete' || !t.isMemberExpression(argument) || !t.isSuper(argument.object)) return
+      // Evaluate the receiver and key expression, but never coerce the key of
+      // a super reference rejected by delete.
+      path.replaceWith(t.sequenceExpression([
+        receiver(),
+        ...(argument.computed ? [argument.property as t.Expression] : []),
+        t.callExpression(classLocal('deleteSuper'), []),
+      ]))
+      path.skip()
+    },
     CallExpression: { exit(path) {
       const callee = path.node.callee
       if (t.isSuper(callee)) {
         path.replaceWith(
           t.callExpression(classLocal('initThis'), [t.callExpression(
             t.memberExpression(classIntrinsic('Reflect'), t.identifier('construct')),
-            [classLocal('super'), buildConcatArgs(path.node.arguments as (t.Expression | t.SpreadElement)[]),
+            [t.callExpression(t.memberExpression(classIntrinsic('Object'), t.identifier('getPrototypeOf')), [t.cloneNode(classId)]),
+              buildConcatArgs(path.node.arguments as (t.Expression | t.SpreadElement)[]),
               t.metaProperty(t.identifier('new'), t.identifier('target'))]
           )])
         )
@@ -143,7 +178,7 @@ interface PrivateDescriptor {
 // Reserved names are injected after parsing and cannot be declared by source
 // code. LOAD_GLOBAL resolves them to VM-private host intrinsics, so class
 // helpers do not accidentally capture a user's Object/WeakMap/etc. binding.
-function classIntrinsic(name: 'Object' | 'WeakMap' | 'WeakSet' | 'TypeError' | 'ReferenceError' | 'Reflect' | 'PropertyKey' | 'Proxy'): t.Identifier {
+function classIntrinsic(name: 'Object' | 'WeakMap' | 'WeakSet' | 'TypeError' | 'ReferenceError' | 'Reflect' | 'PropertyKey' | 'Proxy' | 'FunctionName'): t.Identifier {
   return t.identifier(`@script-vm/intrinsic/${name}`)
 }
 
@@ -427,7 +462,7 @@ function transformPrivateBody(bodyStatements: t.Statement[], descriptors: Map<st
   bodyStatements.push(...transformed)
 }
 
-function buildClassIife(node: t.ClassDeclaration | t.ClassExpression, classId: t.Identifier): t.Expression {
+function buildClassEvaluation(node: t.ClassDeclaration | t.ClassExpression, classId: t.Identifier, namespace: string): t.Expression {
   const sourceClassId = classId
   classId = classLocal('constructor')
   const superClass = node.superClass
@@ -438,26 +473,32 @@ function buildClassIife(node: t.ClassDeclaration | t.ClassExpression, classId: t
   const privateDescriptors = new Map<string, PrivateDescriptor>()
   const helperStatements = createPrivateHelpers()
   helperStatements.push(...classHelper(`
-    function superRef(home, key, receiver) {
-      key = PropertyKey(key);
+    function superRef(home, receiver, key) {
       var base = Object.getPrototypeOf(home);
+      var converted = false;
+      function referenceKey() {
+        if (base === null) throw new TypeError('Cannot access a null super base');
+        if (!converted) { key = PropertyKey(key); converted = true; }
+        return key;
+      }
       return Object.defineProperty({}, 'value', {
-        get: function () { return Reflect.get(base, key, receiver); },
+        get: function () { return Reflect.get(base, referenceKey(), receiver); },
         set: function (value) {
-          if (!Reflect.set(base, key, value, receiver)) throw new TypeError('Cannot assign to inherited property');
+          if (!Reflect.set(base, referenceKey(), value, receiver)) throw new TypeError('Cannot assign to inherited property');
         }
       });
     }
+    function deleteSuper() { throw new ReferenceError('Cannot delete a super property'); }
     function defineMethod(target, key, kind, fn) {
       key = PropertyKey(key);
-      var name = typeof key === 'symbol' ? (key.description === void 0 ? '' : '[' + key.description + ']') : key;
+      var name = FunctionName(key);
       Object.defineProperty(fn, 'name', { value: (kind === 'value' ? '' : kind + ' ') + name, configurable: true });
       var descriptor = { configurable: true, enumerable: false };
       descriptor[kind] = fn;
       if (kind === 'value') descriptor.writable = true;
       Object.defineProperty(target, key, descriptor);
     }
-  `, ['superRef', 'defineMethod']))
+  `, ['superRef', 'deleteSuper', 'defineMethod']))
 
   if (body.some((member) => t.isClassAccessorProperty(member) || t.isClassPrivateProperty(member) && member.static && !member.value && false)) {
     // keep placeholder to avoid unsupported syntax slipping through silently
@@ -583,7 +624,8 @@ function buildClassIife(node: t.ClassDeclaration | t.ClassExpression, classId: t
       t.expressionStatement(
         t.callExpression(classLocal('initThis'), [t.callExpression(
           t.memberExpression(classIntrinsic('Reflect'), t.identifier('construct')),
-          [classLocal('super'), t.identifier('arguments'), t.metaProperty(t.identifier('new'), t.identifier('target'))]
+          [t.callExpression(t.memberExpression(classIntrinsic('Object'), t.identifier('getPrototypeOf')), [t.cloneNode(classId)]),
+            t.identifier('arguments'), t.metaProperty(t.identifier('new'), t.identifier('target'))]
         )])
       ),
     ]
@@ -710,6 +752,18 @@ function buildClassIife(node: t.ClassDeclaration | t.ClassExpression, classId: t
   }
   statements.push(constructor)
 
+  if (node.extra?.vmClassNameExpression) {
+    const key = node.extra.vmClassNameExpression as t.Expression
+    const name = t.callExpression(classIntrinsic('FunctionName'), [t.cloneNode(key)])
+    statements.push(t.expressionStatement(t.callExpression(
+      t.memberExpression(classIntrinsic('Object'), t.identifier('defineProperty')),
+      [classId, t.stringLiteral('name'), t.objectExpression([
+        t.objectProperty(t.identifier('value'), name),
+        t.objectProperty(t.identifier('configurable'), t.booleanLiteral(true)),
+      ])]
+    )))
+  }
+
   if (superClass) {
     // A proxy preserves IsConstructor while its construct trap avoids executing
     // the superclass or reading its prototype during this validation step.
@@ -800,12 +854,38 @@ function buildClassIife(node: t.ClassDeclaration | t.ClassExpression, classId: t
     )))
   }
 
-  statements.push(t.returnStatement(classId))
+  statements.push(t.expressionStatement(classId))
 
-  return t.callExpression(
-    t.functionExpression(null, superParam ? [superParam] : [], strictClassBody(statements)),
-    superClass ? [superClass as t.Expression] : []
-  )
+  // A class definition creates a lexical environment, not a function call.
+  // Keep keys/heritage in the caller's frame (including yield, arguments and
+  // new.target), while every evaluation gets its own helper/name bindings.
+  const declarations: t.Statement[] = []
+  const evaluation: t.Statement[] = []
+  if (superParam) evaluation.push(t.variableDeclaration('let', [t.variableDeclarator(superParam, superClass)]))
+  for (const statement of statements) {
+    if (t.isFunctionDeclaration(statement)) {
+      const fn = t.functionExpression(null, statement.params, statement.body, statement.generator, statement.async)
+      fn.extra = statement.extra
+      declarations.push(t.variableDeclaration('const', [t.variableDeclarator(statement.id!, fn)]))
+    } else {
+      if (t.isVariableDeclaration(statement) && statement.kind === 'var') statement.kind = 'let'
+      evaluation.push(statement)
+    }
+  }
+  const block = t.blockStatement([...declarations, ...evaluation])
+  block.extra = { vmClassEvaluation: true }
+  const expression = t.doExpression(block)
+  const ast = t.file(t.program([t.expressionStatement(expression)]))
+  traverse(ast, {
+    Identifier(path) {
+      // Already namespaced references belong to an outer class. In particular,
+      // lexical super in a nested class key must retain that outer home object.
+      if (/^@script-vm\/class\/(?!scope-)/.test(path.node.name)) {
+        path.node.name = path.node.name.replace('@script-vm/class/', `@script-vm/class/scope-${namespace}/`)
+      }
+    },
+  })
+  return expression
 }
 
 function iteratorIntrinsic(name: string, args: t.Expression[]): t.CallExpression {
@@ -943,7 +1023,16 @@ function buildConcatArgs(elements: (t.Expression | t.SpreadElement)[]): t.Expres
 }
 
 function getEnclosingBody(path: any): t.Statement[] {
-  const functionPath = path.getFunctionParent()
+  let functionPath
+  for (let child = path; child.parentPath; child = child.parentPath) {
+    const parent = child.parentPath
+    if (!parent.isFunction()) continue
+    // A method's computed key is evaluated outside its own function body.
+    // Temporaries introduced there belong to the surrounding execution frame.
+    if ((parent.isClassMethod() || parent.isObjectMethod()) && parent.node.computed && child.key === 'key') continue
+    functionPath = parent
+    break
+  }
   if (functionPath && 'body' in functionPath.node) {
     if (t.isBlockStatement((functionPath.node as any).body)) {
       return ((functionPath.node as any).body as t.BlockStatement).body
@@ -980,11 +1069,61 @@ function toPropertyKeyExpression(key: t.Expression | t.Identifier, computed: boo
   return t.cloneNode(key as t.Expression, true)
 }
 
-function buildObjectDefinePropertyCall(target: t.Identifier, key: t.Expression, descriptor: t.ObjectExpression): t.Expression {
-  return t.callExpression(
-    t.memberExpression(t.identifier('Object'), t.identifier('defineProperty')),
-    [t.cloneNode(target, true), key, descriptor]
+function transformObjectSuper(body: t.BlockStatement, home: t.Identifier, strict: boolean) {
+  const root = t.functionDeclaration(t.identifier('_method'), [], body)
+  const ast = t.file(t.program([root]))
+  const reference = (member: t.MemberExpression) => t.memberExpression(
+    iteratorIntrinsic('ObjectSuperReference', [
+      t.cloneNode(home),
+      toPropertyKeyExpression(member.property as t.Expression, member.computed),
+      t.thisExpression(), t.booleanLiteral(strict),
+    ]), t.identifier('value')
   )
+  traverse(ast, {
+    Function(path) {
+      if (path.node !== root && !path.isArrowFunctionExpression()) path.skip()
+    },
+    Class(path) {
+      // A nested class's heritage and computed keys retain the surrounding
+      // method's super binding. Its method bodies establish different homes.
+      const transformKey = (value: t.Expression): t.Expression => {
+        const statement = t.expressionStatement(value)
+        transformObjectSuper(t.blockStatement([statement]), home, true)
+        return statement.expression
+      }
+      if (path.node.superClass) path.node.superClass = transformKey(path.node.superClass)
+      for (const member of path.node.body.body) {
+        if ('computed' in member && member.computed && 'key' in member) {
+          member.key = transformKey(member.key as t.Expression)
+        }
+      }
+      path.skip()
+    },
+    UnaryExpression(path) {
+      const argument = path.node.argument
+      if (path.node.operator !== 'delete' || !t.isMemberExpression(argument) || !t.isSuper(argument.object)) return
+      // Delete evaluates a computed key expression, but does not coerce it or
+      // look up the base before throwing the required ReferenceError.
+      path.replaceWith(iteratorIntrinsic('ObjectSuperDelete', [
+        toPropertyKeyExpression(argument.property as t.Expression, argument.computed),
+      ]))
+      path.skip()
+    },
+    CallExpression: { exit(path) {
+      const callee = path.node.callee
+      if (!t.isMemberExpression(callee) || !t.isSuper(callee.object)) return
+      path.replaceWith(iteratorIntrinsic('Apply', [
+        reference(callee), t.thisExpression(),
+        buildConcatArgs(path.node.arguments as (t.Expression | t.SpreadElement)[]),
+      ]))
+      path.skip()
+    } },
+    MemberExpression: { exit(path) {
+      if (!t.isSuper(path.node.object) || path.parentPath.isCallExpression({ callee: path.node })) return
+      path.replaceWith(reference(path.node))
+      path.skip()
+    } },
+  })
 }
 
 function buildObjectLiteralSequence(
@@ -994,61 +1133,47 @@ function buildObjectLiteralSequence(
 ): t.Expression {
   const target = t.identifier(nextId())
   const items: t.Expression[] = [
-    t.assignmentExpression('=', t.cloneNode(target, true), t.objectExpression([])),
+    t.assignmentExpression('=', t.cloneNode(target), t.objectExpression([])),
   ]
 
   for (const property of properties) {
     if (t.isSpreadElement(property)) {
-      items.push(
-        t.callExpression(
-          t.memberExpression(t.identifier('Object'), t.identifier('assign')),
-          [t.cloneNode(target, true), t.cloneNode(property.argument, true) as t.Expression]
-        )
-      )
+      items.push(iteratorIntrinsic('ObjectSpread', [t.cloneNode(target), property.argument]))
       continue
     }
 
-    const key = toPropertyKeyExpression(property.key as t.Expression | t.Identifier, property.computed)
-
+    const rawKey = toPropertyKeyExpression(property.key as t.Expression | t.Identifier, property.computed)
+    // ToPropertyKey precedes evaluation of the value, including any side effects
+    // from user coercion. Passing the raw object to defineProperty is too late.
+    const key = property.computed ? iteratorIntrinsic('PropertyKey', [rawKey]) : rawKey
     if (t.isObjectProperty(property)) {
-      items.push(
-        buildObjectDefinePropertyCall(
-          target,
-          key,
-          t.objectExpression([
-            t.objectProperty(t.identifier('value'), t.cloneNode(property.value, true) as t.Expression),
-            t.objectProperty(t.identifier('writable'), t.booleanLiteral(true)),
-            t.objectProperty(t.identifier('enumerable'), t.booleanLiteral(true)),
-            t.objectProperty(t.identifier('configurable'), t.booleanLiteral(true)),
-          ])
-        )
-      )
+      if (!property.computed && !property.shorthand && t.isStringLiteral(rawKey, { value: '__proto__' })) {
+        items.push(iteratorIntrinsic('ObjectSetPrototype', [t.cloneNode(target), property.value as t.Expression]))
+      } else {
+        const value = property.value as t.Expression
+        const inferName = t.isArrowFunctionExpression(value) || t.isFunctionExpression(value) && !value.id
+        items.push(iteratorIntrinsic('ObjectDefineData', [t.cloneNode(target), key, value, t.booleanLiteral(inferName)]))
+      }
       continue
     }
 
-    const fn = t.functionExpression(
-      null,
-      property.params as any,
-      t.cloneNode(property.body, true),
-      property.generator,
-      property.async
-    )
-    fn.extra = { ...property.extra }
-    const descriptorProps: t.ObjectProperty[] = []
-    if (property.kind === 'method') {
-      descriptorProps.push(t.objectProperty(t.identifier('value'), fn))
-      descriptorProps.push(t.objectProperty(t.identifier('writable'), t.booleanLiteral(true)))
-    } else if (property.kind === 'get') {
-      descriptorProps.push(t.objectProperty(t.identifier('get'), fn))
-    } else {
-      descriptorProps.push(t.objectProperty(t.identifier('set'), fn))
-    }
-    descriptorProps.push(t.objectProperty(t.identifier('enumerable'), t.booleanLiteral(true)))
-    descriptorProps.push(t.objectProperty(t.identifier('configurable'), t.booleanLiteral(true)))
-    items.push(buildObjectDefinePropertyCall(target, key, t.objectExpression(descriptorProps)))
+    const home = t.identifier(nextId())
+    const methodBody = t.cloneNode(property.body, true)
+    const strict = path.isInStrictMode() || methodBody.directives.some(directive => directive.value.value === 'use strict')
+    transformObjectSuper(methodBody, home, strict)
+    const fn = t.functionExpression(null, property.params as any, methodBody, property.generator, property.async)
+    fn.extra = { ...property.extra, scriptVmMethod: true }
+    // Each method captures the actual object created on this evaluation, even
+    // when a loop reuses the outer temporary or a method is later copied.
+    const captureHome = t.callExpression(t.functionExpression(null, [home], t.blockStatement([
+      t.returnStatement(fn),
+    ])), [t.cloneNode(target)])
+    items.push(iteratorIntrinsic('ObjectDefineMethod', [
+      t.cloneNode(target), key, t.stringLiteral(property.kind === 'method' ? 'value' : property.kind), captureHome,
+    ]))
   }
 
-  items.push(t.cloneNode(target, true))
+  items.push(t.cloneNode(target))
   declareTempBindings(path, [target])
   return t.sequenceExpression(items)
 }
@@ -1257,9 +1382,25 @@ export function normalizeAst(file: t.File): t.File {
   }
   let templateSiteCounter = 0
 
+  inferFunctionNames(file)
+
   // Normalize parameters before object/class visitors move their method bodies.
   traverse(file, { Function: normalizeFunctionParameters })
   traverse(file, { Identifier(path) { reservedNames.add(path.node.name) } })
+
+  // Computed property NamedEvaluation receives the already coerced key. Set
+  // the class name during its definition so static members can observe or
+  // replace it; naming the finished value would be too late.
+  traverse(file, {
+    ObjectProperty(path) {
+      const { node } = path
+      if (!node.computed || !t.isClassExpression(node.value) || node.value.id) return
+      const key = t.identifier(nextId())
+      node.key = t.assignmentExpression('=', t.cloneNode(key), iteratorIntrinsic('PropertyKey', [node.key as t.Expression]))
+      node.value.extra = { ...node.value.extra, vmClassNameExpression: key }
+      declareTempBindings(path, [key])
+    },
+  })
 
   traverse(file, {
     BigIntLiteral(path: any) {
@@ -1334,7 +1475,7 @@ export function normalizeAst(file: t.File): t.File {
 
     CallExpression(path) {
       // Class lowering must preserve super construction and new.target.
-      if (t.isSuper(path.node.callee)) return
+      if (t.isSuper(path.node.callee) || t.isMemberExpression(path.node.callee) && t.isSuper(path.node.callee.object)) return
       if (t.isImport(path.node.callee)) {
         path.node.callee = t.identifier('__vm_import')
         return
@@ -1382,41 +1523,13 @@ export function normalizeAst(file: t.File): t.File {
       path.skip()
     },
 
-    ObjectExpression(path) {
-      const hasSpread = path.node.properties.some(prop => t.isSpreadElement(prop))
-      const hasMethods = path.node.properties.some(prop => t.isObjectMethod(prop))
-      if (!hasSpread && !hasMethods) return
-
-      if (hasMethods) {
-        path.replaceWith(buildObjectLiteralSequence(path, path.node.properties, nextId))
-        path.skip()
-        return
-      }
-
-      const assignArgs: t.Expression[] = [t.objectExpression([])]
-      let currentProps: t.ObjectProperty[] = []
-      for (const prop of path.node.properties) {
-        if (t.isSpreadElement(prop)) {
-          if (currentProps.length > 0) {
-            assignArgs.push(t.objectExpression(currentProps))
-            currentProps = []
-          }
-          assignArgs.push(prop.argument)
-        } else {
-          currentProps.push(prop as t.ObjectProperty)
-        }
-      }
-      if (currentProps.length > 0) {
-        assignArgs.push(t.objectExpression(currentProps))
-      }
-      path.replaceWith(
-        t.callExpression(
-          t.memberExpression(t.identifier('Object'), t.identifier('assign')),
-          assignArgs
-        )
-      )
+    ObjectExpression: { exit(path) {
+      // Normalize every nonempty source literal, including data-only literals:
+      // assignment cannot implement __proto__ and own-property definitions.
+      if (path.node.properties.length === 0) return
+      path.replaceWith(buildObjectLiteralSequence(path, path.node.properties, nextId))
       path.skip()
-    },
+    } },
 
     OptionalMemberExpression(path) {
       if (!isOptionalChainRoot(path)) return
@@ -1445,10 +1558,14 @@ export function normalizeAst(file: t.File): t.File {
           binding,
           path.node.body,
         ]))
-        const labeled = path.parentPath.isLabeledStatement()
-        const loopStatement = labeled
-          ? t.labeledStatement(t.cloneNode((path.parentPath.node as t.LabeledStatement).label), loop)
-          : loop
+        // Every contiguous label denotes this iteration statement, including
+        // continue targets. Move the entire label set inside iterator cleanup.
+        let replacementPath: typeof path | typeof path.parentPath = path
+        let loopStatement: t.Statement = loop
+        while (replacementPath.parentPath?.isLabeledStatement()) {
+          replacementPath = replacementPath.parentPath
+          loopStatement = t.labeledStatement(t.cloneNode((replacementPath.node as t.LabeledStatement).label), loopStatement)
+        }
         const replacement = [
           t.variableDeclaration('var', [t.variableDeclarator(iterator, iteratorIntrinsic('IteratorStart', [path.node.right]))]),
           t.tryStatement(t.blockStatement([loopStatement]),
@@ -1459,8 +1576,7 @@ export function normalizeAst(file: t.File): t.File {
             t.blockStatement([t.expressionStatement(iteratorIntrinsic('IteratorClose', [iterator]))])
           ),
         ]
-        if (labeled) path.parentPath.replaceWithMultiple(replacement)
-        else path.replaceWithMultiple(replacement)
+        replacementPath.replaceWithMultiple(replacement)
         return
       }
       const iterTmp = t.identifier(nextId())
@@ -1558,8 +1674,27 @@ export function normalizeAst(file: t.File): t.File {
     },
   })
 
-  // Pass 2: Normalize arrows, classes, catch clause renaming
-  const arrowCaptures = new WeakMap<t.Node, { thisId?: t.Identifier; argsId?: t.Identifier; newTargetId?: t.Identifier }>()
+  // Lower classes before arrows so lexical captures also visit computed class
+  // keys. Method bodies remain ordinary function boundaries in this pass.
+  traverse(file, {
+    ClassDeclaration(path) {
+      const node = path.node
+      const className = node.id ? node.id.name : '_AnonymousClass'
+      const classId = t.identifier(className)
+      path.replaceWith(
+        t.variableDeclaration('let', [t.variableDeclarator(classId, buildClassEvaluation(node, classId, nextId()))])
+      )
+    },
+    ClassExpression(path) {
+      const node = path.node
+      const className = node.id ? node.id.name : '_AnonymousClass'
+      const classId = t.identifier(className)
+      path.replaceWith(buildClassEvaluation(node, classId, nextId()))
+    },
+  })
+
+  // Normalize arrows and catch clause bindings after class lexical evaluation.
+  const arrowCaptures = new WeakMap<t.Node, { thisId?: t.Identifier; newTargetId?: t.Identifier }>()
 
   const skipNonArrowVisitors = {
     FunctionDeclaration(p: any) { p.skip() },
@@ -1572,9 +1707,9 @@ export function normalizeAst(file: t.File): t.File {
     ArrowFunctionExpression(path) {
       const { node } = path
 
-      // Detect this/arguments/new.target usage in arrow body (skip nested non-arrow functions)
+      // Capture this/new.target values; arguments resolves through its live
+      // lexical binding in lowering, including later assignments to that binding.
       let usesThis = false
-      let usesArguments = false
       let usesNewTarget = false
       path.traverse({
         ...skipNonArrowVisitors,
@@ -1582,11 +1717,6 @@ export function normalizeAst(file: t.File): t.File {
         // capture from their own enclosing scope
         ArrowFunctionExpression(p: any) { p.skip() },
         ThisExpression() { usesThis = true },
-        Identifier(innerPath: any) {
-          if (innerPath.node.name === 'arguments' && !innerPath.node.extra?.vmIntrinsicArguments && !innerPath.scope.getBinding('arguments')) {
-            usesArguments = true
-          }
-        },
         MetaProperty(innerPath: any) {
           if (innerPath.node.meta.name === 'new' && innerPath.node.property.name === 'target') {
             usesNewTarget = true
@@ -1594,7 +1724,7 @@ export function normalizeAst(file: t.File): t.File {
         },
       })
 
-      if (usesThis || usesArguments || usesNewTarget) {
+      if (usesThis || usesNewTarget) {
         const enclosing = path.findParent((p: any) =>
           p.isFunctionDeclaration() || p.isFunctionExpression() || p.isProgram()
         )
@@ -1621,15 +1751,6 @@ export function normalizeAst(file: t.File): t.File {
             )
           }
 
-          if (usesArguments && !captures.argsId) {
-            captures.argsId = t.identifier(nextId())
-            getBody(enclosingNode).unshift(
-              t.variableDeclaration('var', [
-                t.variableDeclarator(t.cloneNode(captures.argsId, true), t.identifier('arguments'))
-              ])
-            )
-          }
-
           if (usesNewTarget && !captures.newTargetId) {
             captures.newTargetId = t.identifier(nextId())
             getBody(enclosingNode).unshift(
@@ -1649,18 +1770,6 @@ export function normalizeAst(file: t.File): t.File {
               ArrowFunctionExpression(p: any) { p.skip() },
               ThisExpression(innerPath: any) {
                 innerPath.replaceWith(t.cloneNode(captures!.thisId!, true))
-              },
-            })
-          }
-
-          if (usesArguments && captures.argsId) {
-            path.traverse({
-              ...skipNonArrowVisitors,
-              ArrowFunctionExpression(p: any) { p.skip() },
-              Identifier(innerPath: any) {
-                if (innerPath.node.name === 'arguments' && !innerPath.node.extra?.vmIntrinsicArguments && !innerPath.scope.getBinding('arguments')) {
-                  innerPath.replaceWith(t.cloneNode(captures!.argsId!, true))
-                }
               },
             })
           }
@@ -1695,7 +1804,7 @@ export function normalizeAst(file: t.File): t.File {
       )
 
       const newNode = path.node as unknown as t.FunctionExpression
-      newNode.extra = { ...node.extra, scriptVmMethod: true }
+      newNode.extra = { ...node.extra, scriptVmMethod: true, scriptVmArrow: true }
 
     },
     CatchClause(path) {
@@ -1703,20 +1812,6 @@ export function normalizeAst(file: t.File): t.File {
         const nextName = nextId()
         path.scope.rename(path.node.param.name, nextName)
       }
-    },
-    ClassDeclaration(path) {
-      const node = path.node
-      const className = node.id ? node.id.name : '_AnonymousClass'
-      const classId = t.identifier(className)
-      path.replaceWith(
-        t.variableDeclaration('let', [t.variableDeclarator(classId, buildClassIife(node, classId))])
-      )
-    },
-    ClassExpression(path) {
-      const node = path.node
-      const className = node.id ? node.id.name : '_AnonymousClass'
-      const classId = t.identifier(className)
-      path.replaceWith(buildClassIife(node, classId))
     },
   })
 

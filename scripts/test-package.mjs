@@ -94,13 +94,14 @@ try {
   await writeFile(path.join(consumer, 'input.js'), source)
   const smokeAssertions = `
     const source = ${JSON.stringify(source)};
-    for (const [name, api] of [['root', root], ['core', core]]) {
+    for (const [name, api] of [['root', root], ['core', core]]) for (const runtime of ['auto', 'full']) {
       assert.equal(typeof api.compileSource, 'function', name + ' compileSource');
       assert.equal(typeof api.CompileError, 'function', name + ' CompileError');
-      const output = api.compileSource(source, { format: 'iife', filename: 'consumer.js' });
+      const output = api.compileSource(source, { format: 'iife', filename: 'consumer.js', runtime });
       assert.equal(typeof output.code, 'string');
       assert.ok(Array.isArray(output.artifact.bytecode));
       assert.ok(output.artifact.bytecode.length > 0);
+      assert.equal(output.artifact.runtimeRequirements.version, 1);
       const context = {};
       runInNewContext(output.code, context, { timeout: 3000 });
       assert.equal(context.__packageResult, 42, name + ' compiled execution');
@@ -142,20 +143,52 @@ try {
   await run(process.execPath, ['consumer.cjs'])
   await run(process.execPath, ['consumer.mjs'])
 
+  console.log('[package] Linking an ESM-only dependency from the installed production compiler.')
+  const dependency = path.join(consumer, 'node_modules', 'scriptvm-fixture-state')
+  await mkdir(dependency, { recursive: true })
+  await writeFile(path.join(dependency, 'package.json'), JSON.stringify({
+    name: 'scriptvm-fixture-state', type: 'module',
+    exports: { '.': { import: './state.js', require: './wrong.cjs' } },
+  }))
+  await writeFile(path.join(dependency, 'state.js'),
+    'export let count = 1; export function increment() { count++; } export default 8;')
+  await writeFile(path.join(dependency, 'wrong.cjs'), 'throw new Error("must select import condition");')
+  await writeFile(path.join(consumer, 'static-entry.mjs'),
+    "export * from 'scriptvm-fixture-state'; export { default } from 'scriptvm-fixture-state';")
+  await writeFile(path.join(consumer, 'static-consumer.mjs'), `
+    import assert from 'node:assert/strict';
+    import { writeFileSync, rmSync } from 'node:fs';
+    import { transform } from 'script-vm-next';
+    const code = transform('static-entry.mjs', { format: 'esm' });
+    writeFileSync('static-output.mjs', code);
+    rmSync('node_modules/scriptvm-fixture-state', { recursive: true });
+    const result = await import('./static-output.mjs');
+    assert.equal(result.count, 1);
+    assert.equal(result.default, 8);
+    result.increment();
+    assert.equal(result.count, 2);
+  `)
+  await run(process.execPath, ['static-consumer.mjs'])
+
   const typedAssertions = `
-    const options: CompileOptions = { format: 'iife' };
-    const sourceOptions: CompileSourceOptions = { format: 'iife', filename: 'consumer.js' };
+    const runtime: root.RuntimeMode = 'auto';
+    const fullRuntime: core.RuntimeMode = 'full';
+    const options: CompileOptions = { format: 'iife', runtime };
+    const sourceOptions: CompileSourceOptions = { format: 'iife', filename: 'consumer.js', runtime: fullRuntime };
     const fileResult: CompiledOutput = root.compile('input.js', null, options);
     const sourceResult: CompiledOutput = core.compileSource('1 + 2', sourceOptions);
     const code: string = root.transform('input.js', options);
     const sourceCode: string = sourceResult.code;
     const bytecode: number[] = sourceResult.artifact.bytecode;
+    const requirements: core.RuntimeRequirements | undefined = sourceResult.artifact.runtimeRequirements;
     const version: string = root.VERSION;
     const diagnostic: Error = new core.CompileError('message', { code: 'SYNTAX_ERROR', stage: 'parse' });
     // @ts-expect-error Output formats are checked, not any.
     root.compile('input.js', null, { format: 'invalid' });
     // @ts-expect-error Source input is a string.
     core.compileSource(42);
+    // @ts-expect-error Runtime selection is checked, not any.
+    core.compileSource('1', { runtime: 'unknown' });
     // @ts-expect-error Compiled output is typed, not any.
     const invalidCode: number = sourceResult.code;
   `
