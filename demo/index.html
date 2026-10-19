@@ -4,8 +4,100 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="theme-color" content="#f4f6fb" />
-    <meta name="description" content="在浏览器中体验 script-vm-next：将 JavaScript 编译为字节码，查看产物并运行示例。" />
-    <title>script-vm-next · JavaScript Playground</title>
+    <meta name="description" content="在浏览器本地将 JavaScript 编译为字节码与按需 VM，查看自包含 IIFE、运行示例并下载产物。了解 script-vm-next 的源码 API、ES6 支持边界和接入文档。" />
+    <meta name="robots" content="index, follow, max-image-preview:large" />
+    <title>script-vm-next · JavaScript 在线编译器与字节码 VM Playground</title>
+    <link rel="canonical" href="https://momeak9.github.io/script-vm-next/" />
+    <link rel="icon" type="image/svg+xml" href="%BASE_URL%favicon.svg" />
+    <link rel="sitemap" type="application/xml" href="%BASE_URL%sitemap.xml" />
+    <link rel="alternate" type="text/plain" href="%BASE_URL%llms.txt" title="Project summary and documentation for AI discovery" />
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="script-vm-next" />
+    <meta property="og:locale" content="zh_CN" />
+    <meta property="og:title" content="script-vm-next · JavaScript 在线编译器与字节码 VM Playground" />
+    <meta property="og:description" content="在浏览器本地将 JavaScript 编译为字节码与按需 VM，查看自包含 IIFE、运行示例并下载产物。了解 script-vm-next 的源码 API、ES6 支持边界和接入文档。" />
+    <meta property="og:url" content="https://momeak9.github.io/script-vm-next/" />
+    <meta property="og:image" content="https://momeak9.github.io/script-vm-next/images/social-preview.png" />
+    <meta property="og:image:type" content="image/png" />
+    <meta property="og:image:width" content="1200" />
+    <meta property="og:image:height" content="630" />
+    <meta property="og:image:alt" content="script-vm-next：JavaScript 编译为字节码与按需 VM，浏览器本地编译与演示" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="script-vm-next · JavaScript 在线编译器与字节码 VM Playground" />
+    <meta name="twitter:description" content="在浏览器本地将 JavaScript 编译为字节码与按需 VM，查看自包含 IIFE、运行示例并下载产物。了解 script-vm-next 的源码 API、ES6 支持边界和接入文档。" />
+    <meta name="twitter:image" content="https://momeak9.github.io/script-vm-next/images/social-preview.png" />
+    <meta name="twitter:image:alt" content="script-vm-next：JavaScript 编译为字节码与按需 VM，浏览器本地编译与演示" />
+    <script type="application/ld+json">
+      {
+        "@context": "https://schema.org",
+        "@graph": [
+          {
+            "@type": "WebSite",
+            "@id": "https://momeak9.github.io/script-vm-next/#website",
+            "url": "https://momeak9.github.io/script-vm-next/",
+            "name": "script-vm-next",
+            "inLanguage": "zh-CN"
+          },
+          {
+            "@type": "WebPage",
+            "@id": "https://momeak9.github.io/script-vm-next/#webpage",
+            "url": "https://momeak9.github.io/script-vm-next/",
+            "name": "script-vm-next · JavaScript 在线编译器与字节码 VM Playground",
+            "description": "在浏览器本地将 JavaScript 编译为字节码与按需 VM，查看自包含 IIFE、运行示例并下载产物。了解 script-vm-next 的源码 API、ES6 支持边界和接入文档。",
+            "inLanguage": "zh-CN",
+            "isPartOf": { "@id": "https://momeak9.github.io/script-vm-next/#website" },
+            "mainEntity": { "@id": "https://momeak9.github.io/script-vm-next/#software" }
+          },
+          {
+            "@type": "SoftwareApplication",
+            "@id": "https://momeak9.github.io/script-vm-next/#software",
+            "name": "script-vm-next",
+            "url": "https://momeak9.github.io/script-vm-next/",
+            "applicationCategory": "DeveloperApplication",
+            "operatingSystem": "Web browser",
+            "softwareVersion": "0.2.0-beta.1",
+            "description": "基于寄存器的 JavaScript 虚拟化编译器。浏览器演示页将单文件脚本编译为字节码和按需组装的自包含 IIFE，支持查看、下载与运行产物。当前覆盖经过测试的 JavaScript 子集，npm 包尚未发布。",
+            "sameAs": "https://github.com/MoMeak9/script-vm-next",
+            "image": "https://momeak9.github.io/script-vm-next/images/social-preview.png",
+            "featureList": ["浏览器本地编译", "寄存器字节码", "编译期按需组装 VM", "自包含 IIFE 产物", "运行示例与查看日志"],
+            "mainEntityOfPage": { "@id": "https://momeak9.github.io/script-vm-next/#webpage" }
+          },
+          {
+            "@type": "FAQPage",
+            "@id": "https://momeak9.github.io/script-vm-next/#faq",
+            "inLanguage": "zh-CN",
+            "isPartOf": { "@id": "https://momeak9.github.io/script-vm-next/#webpage" },
+            "mainEntity": [
+              {
+                "@type": "Question",
+                "name": "script-vm-next 会把源码上传到服务器吗？",
+                "acceptedAnswer": { "@type": "Answer", "text": "演示页在浏览器本地 Worker 中完成编译，不会把源码上传到编译服务器。只有你点击「运行产物」时才执行程序。" }
+              },
+              {
+                "@type": "Question",
+                "name": "为什么只写 console.log，生成的代码里也有 VM？",
+                "acceptedAnswer": { "@type": "Answer", "text": "编译产物包含字节码和执行这些字节码所需的解释器。默认 auto 模式会分析所有已编译函数，保留所需的指令、执行方式和辅助函数，为简单程序生成所需的 VM 子集。" }
+              },
+              {
+                "@type": "Question",
+                "name": "这个 Demo 支持哪些 JavaScript 和模块语法？",
+                "acceptedAnswer": { "@type": "Answer", "text": "演示页接受单文件脚本，提供闭包、类、迭代器与异步函数等示例。它不支持模块导入导出、require、动态 import() 或 DOM；项目当前覆盖经过测试的 JavaScript 子集，具体语法和语义边界见兼容性矩阵。" }
+              },
+              {
+                "@type": "Question",
+                "name": "下载的编译产物也处于沙箱中吗？",
+                "acceptedAnswer": { "@type": "Answer", "text": "下载产物使用运行宿主的全局对象与权限，本身不提供安全沙箱。Demo 的执行限制由页面单独提供：程序运行在隔离 Worker 中，禁用网络和 DOM，并有超时与日志上限。" }
+              },
+              {
+                "@type": "Question",
+                "name": "现在可以通过 npm 安装 script-vm-next 吗？",
+                "acceptedAnswer": { "@type": "Answer", "text": "当前目标版本为 0.2.0-beta.1，npm 包尚未发布。你可以从 GitHub 获取源码，按照 README 本地构建并验证安装包；以仓库发布状态为准。" }
+              }
+            ]
+          }
+        ]
+      }
+    </script>
   </head>
   <body>
     <div class="page-shell">
@@ -13,6 +105,7 @@
         <a class="brand" href="./" aria-label="script-vm-next 首页"><span class="brand-mark" aria-hidden="true">vm<span></span></span><span>script-vm<span class="brand-next">-next</span></span></a>
         <nav aria-label="项目链接">
           <a href="https://github.com/MoMeak9/script-vm-next/blob/main/docs/compatibility.md" target="_blank" rel="noopener noreferrer">兼容性说明 <span aria-hidden="true">↗</span></a>
+          <a class="wechat-nav" href="#wechat">关注公众号</a>
           <a class="github-link" href="https://github.com/MoMeak9/script-vm-next" target="_blank" rel="noopener noreferrer">GitHub <span aria-hidden="true">↗</span></a>
         </nav>
       </header>
@@ -21,8 +114,8 @@
         <section class="hero" aria-labelledby="page-title">
           <div>
             <div class="eyebrow"><span class="live-dot" aria-hidden="true"></span> JAVASCRIPT VIRTUALIZATION / PLAYGROUND</div>
-            <h1 id="page-title">代码，换一种运行方式<span>。</span></h1>
-            <p class="hero-description">把 JavaScript 编译成字节码，交给轻量虚拟机执行。<br class="desktop-break" />在这里修改、编译、观察结果，所有计算都在你的浏览器里完成。</p>
+            <h1 id="page-title">JavaScript 在线编译器<span class="hero-product">script-vm-next</span></h1>
+            <p class="hero-description">代码，换一种运行方式：编译为字节码，交给按需 VM 执行。<br class="desktop-break" />在这里修改、编译、观察结果，所有计算都在你的浏览器里完成。</p>
           </div>
           <div class="pipeline" aria-label="编译流程：JavaScript 到字节码，再由虚拟机执行">
             <div class="pipeline-step"><span class="pipeline-icon">{ }</span><span>JavaScript</span><small>你的源码</small></div>
@@ -32,6 +125,8 @@
             <div class="pipeline-step"><span class="pipeline-icon vm-icon">▷</span><span>VM runtime</span><small>自包含执行产物</small></div>
           </div>
         </section>
+
+        <noscript><p class="no-script-notice">编辑器、编译与运行功能需要启用 JavaScript。你仍可阅读下方的项目介绍、常见问题和文档，并查看公众号二维码。</p></noscript>
 
         <section class="studio" aria-label="JavaScript 编译工作台">
           <div class="toolbar">
@@ -79,6 +174,33 @@
         </section>
 
         <div class="workspace-note"><p><span aria-hidden="true">ⓘ</span> 单文件演示环境，支持范围见兼容性说明。运行于隔离 Worker，禁用网络与 DOM，超时自动停止；仅运行你信任的代码。</p><span id="app-status" role="status">正在准备编译器…</span></div>
+
+        <section id="project-overview" class="info-section project-overview" aria-labelledby="overview-heading">
+          <div class="section-intro"><span class="section-label">ABOUT THE PROJECT</span><h2 id="overview-heading">script-vm-next 是什么？</h2><p>script-vm-next 是一个基于寄存器的 JavaScript 虚拟化编译器，将源代码转换为字节码和自包含的 JavaScript 解释器。这个在线 Playground 展示单文件脚本从编译到运行的过程，支持查看和下载生成的 IIFE 产物。</p></div>
+          <div class="feature-grid">
+            <article><h3>浏览器本地编译</h3><p>在本地 Worker 中处理源码，无需把代码上传到编译服务器。选择内置示例或输入自己的 JavaScript，即可查看结果。</p></article>
+            <article><h3>按需生成 VM</h3><p>默认 auto 模式分析所有已编译函数，仅组装所需的指令和辅助函数，减少简单程序的产物体积。</p></article>
+            <article><h3>可检查的编译产物</h3><p>查看字节码长度、产物大小和执行方式，复制或下载代码，在自己的 JavaScript 宿主中验证运行行为。</p></article>
+          </div>
+          <div class="getting-started"><h3>如何使用这个 JavaScript Playground</h3><ol><li>选择示例，或在源码区输入单文件 JavaScript。</li><li>点击「编译」，查看生成代码、产物大小和按需运行时统计。</li><li>点击「运行产物」查看日志，或复制、下载代码用于本地验证。</li></ol></div>
+          <p class="support-note">项目当前覆盖经过测试的 JavaScript 子集，尚不宣称完整符合 ES2015/ES6。浏览器 Demo 与 Node.js 文件 API 的模块能力不同，接入前请阅读兼容性说明。</p>
+          <aside class="english-summary" lang="en" aria-label="English project summary"><h3>A JavaScript bytecode compiler in your browser</h3><p>script-vm-next compiles a tested JavaScript subset into register-based bytecode and a self-contained interpreter. This playground compiles standalone scripts locally, assembles the required VM at compile time, and lets you inspect, download, and run IIFE output. See the documentation for language and module limits.</p></aside>
+          <nav class="doc-links" aria-label="项目文档"><a href="https://github.com/MoMeak9/script-vm-next/blob/main/README.zh-CN.md" target="_blank" rel="noopener noreferrer">中文接入文档 ↗</a><a href="https://github.com/MoMeak9/script-vm-next/blob/main/README.md" target="_blank" rel="noopener noreferrer" lang="en">English README ↗</a><a href="https://github.com/MoMeak9/script-vm-next/blob/main/docs/compatibility.md" target="_blank" rel="noopener noreferrer">语言兼容性矩阵 ↗</a><a href="https://github.com/MoMeak9/script-vm-next/blob/main/docs/runtime-assembly.md" target="_blank" rel="noopener noreferrer">按需运行时设计 ↗</a><a href="https://github.com/MoMeak9/script-vm-next/blob/main/docs/README.md" target="_blank" rel="noopener noreferrer">全部文档 ↗</a></nav>
+        </section>
+
+        <section id="wechat" class="wechat-card" aria-labelledby="wechat-heading">
+          <div class="wechat-copy"><span class="section-label">WECHAT / 公众号</span><h2 id="wechat-heading">关注公众号，继续交流</h2><p>欢迎关注公众号，交流 script-vm-next 的使用体验与建议。</p><p class="wechat-instructions">电脑端用微信「扫一扫」识别二维码；手机端可保存图片后，在微信中识别。</p><div class="wechat-actions"><a class="button button-primary" href="%BASE_URL%images/wechat-qrcode.jpg" download="script-vm-next-wechat.jpg">保存公众号二维码</a><a class="wechat-original" href="%BASE_URL%images/wechat-qrcode.jpg" target="_blank" rel="noopener noreferrer">查看原图 <span aria-hidden="true">↗</span></a></div></div>
+          <figure class="wechat-qr"><img src="%BASE_URL%images/wechat-qrcode.jpg" alt="公众号关注二维码，请使用微信扫一扫识别" width="430" height="430" loading="lazy" decoding="async" /><figcaption>使用微信扫码关注</figcaption></figure>
+        </section>
+
+        <section id="faq" class="info-section faq-section" aria-labelledby="faq-heading">
+          <div class="section-intro"><span class="section-label">QUESTIONS & ANSWERS</span><h2 id="faq-heading">常见问题</h2></div>
+          <details><summary>script-vm-next 会把源码上传到服务器吗？</summary><p>演示页在浏览器本地 Worker 中完成编译，不会把源码上传到编译服务器。只有你点击「运行产物」时才执行程序。</p></details>
+          <details><summary>为什么只写 console.log，生成的代码里也有 VM？</summary><p>编译产物包含字节码和执行这些字节码所需的解释器。默认 auto 模式会分析所有已编译函数，保留所需的指令、执行方式和辅助函数，为简单程序生成所需的 VM 子集。</p></details>
+          <details><summary>这个 Demo 支持哪些 JavaScript 和模块语法？</summary><p>演示页接受单文件脚本，提供闭包、类、迭代器与异步函数等示例。它不支持模块导入导出、require、动态 import() 或 DOM；项目当前覆盖经过测试的 JavaScript 子集，具体语法和语义边界见<a href="https://github.com/MoMeak9/script-vm-next/blob/main/docs/compatibility.md" target="_blank" rel="noopener noreferrer">兼容性矩阵</a>。</p></details>
+          <details><summary>下载的编译产物也处于沙箱中吗？</summary><p>下载产物使用运行宿主的全局对象与权限，本身不提供安全沙箱。Demo 的执行限制由页面单独提供：程序运行在隔离 Worker 中，禁用网络和 DOM，并有超时与日志上限。</p></details>
+          <details><summary>现在可以通过 npm 安装 script-vm-next 吗？</summary><p>当前目标版本为 0.2.0-beta.1，npm 包尚未发布。你可以从 GitHub 获取源码，按照 README 本地构建并验证安装包；以仓库发布状态为准。</p></details>
+        </section>
 
         <section class="install-strip" aria-label="预发布状态"><div><span class="install-label">BRING IT TO YOUR PROJECT</span><p id="release-status">预发布准备中 · v0.2.0-beta.1</p></div><a class="source-link" href="https://github.com/MoMeak9/script-vm-next" target="_blank" rel="noopener noreferrer">查看源码与接入说明 <span aria-hidden="true">↗</span></a></section>
       </main>

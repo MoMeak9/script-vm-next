@@ -39,6 +39,7 @@ a { color: inherit; text-decoration: none; }
 .live-dot { width: 5px; height: 5px; border-radius: 50%; background: #6e87ef; box-shadow: 0 0 0 3px #e9edfc; }
 h1 { font-size: clamp(27px, 3vw, 38px); letter-spacing: -1.3px; line-height: 1.25; margin: 19px 0 15px; font-weight: 600; }
 h1 > span { color: var(--blue); }
+.hero-product { display: block; margin-top: 9px; font: 500 18px/1.4 var(--mono); letter-spacing: -.5px; }
 .hero-description { color: #7a8496; font-size: 12px; line-height: 1.9; margin: 0; }
 .pipeline { display: flex; align-items: center; gap: 14px; padding: 7px 10px 0 0; }
 .pipeline-step { display: flex; flex-direction: column; align-items: center; gap: 9px; min-width: 78px; }
@@ -146,6 +147,35 @@ kbd { font-family: inherit; font-size: 8px; letter-spacing: .2px; color: #9ba4b6
 .install-strip p { margin: 7px 0 0; color: #65738e; font-size: 12px; font-weight: 500; }
 .source-link { display: flex; align-items: center; gap: 18px; background: #f9faff; border: 1px solid #e0e6f2; border-radius: 5px; padding: 11px 15px; color: #697da5; font-size: 11px; }
 .source-link:hover { background: #e9edf9; color: #4666ec; }
+.info-section { margin: 30px 0; padding: 28px; background: #fff; border: 1px solid var(--border); border-radius: 12px; }
+.section-label { color: #687ba1; font: 10px/1.5 var(--mono); letter-spacing: 1px; }
+.section-intro h2, .wechat-card h2 { margin: 10px 0 12px; color: #25314b; font-size: 23px; line-height: 1.5; letter-spacing: -.4px; }
+.info-section p, .wechat-card p { margin: 0; color: #59677d; font-size: 14px; line-height: 1.95; }
+.info-section h3 { margin: 0 0 9px; font-size: 15px; line-height: 1.6; }
+.info-section a { color: #3957c6; text-decoration: underline; text-underline-offset: 3px; }
+.info-section a:hover { color: #253d99; }
+.feature-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 26px; margin: 25px 0; }
+.feature-grid article { padding-left: 14px; border-left: 2px solid #dce4fd; }
+.getting-started { padding: 18px 20px; border-radius: 8px; background: #f7f9fd; }
+.getting-started ol { margin: 0; padding-left: 20px; font-size: 14px; line-height: 2; color: #59677d; }
+.info-section .support-note { margin: 20px 0; font-size: 13px; }
+.english-summary { padding-top: 19px; border-top: 1px solid var(--border); }
+.english-summary p { font-size: 13px; }
+.doc-links { display: flex; flex-wrap: wrap; gap: 12px 23px; margin-top: 20px; font-size: 13px; line-height: 1.7; }
+.wechat-card { display: grid; grid-template-columns: minmax(0, 1fr) 230px; gap: 36px; align-items: center; margin: 30px 0; padding: 30px; background: #edf5f2; border: 1px solid #d5e7df; border-radius: 12px; scroll-margin-top: 20px; }
+.wechat-card .section-label { color: #416f5d; }
+.wechat-card .wechat-instructions { margin-top: 12px; font-size: 13px; }
+.wechat-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 18px; margin-top: 20px; }
+.wechat-actions .button { min-height: 40px; font-size: 13px; }
+.wechat-original { color: #385c4c; font-size: 13px; text-decoration: underline; text-underline-offset: 3px; }
+.wechat-qr { margin: 0; text-align: center; }
+.wechat-qr img { display: block; width: 215px; max-width: 100%; height: auto; margin: auto; border: 1px solid #dbe4df; border-radius: 8px; background: #fff; }
+.wechat-qr figcaption { margin-top: 10px; color: #526d60; font-size: 12px; line-height: 1.7; }
+.faq-section details { padding: 17px 0; border-top: 1px solid var(--border); }
+.faq-section summary { cursor: pointer; color: #354561; font-size: 14px; line-height: 1.8; }
+.faq-section summary:focus-visible { outline: 2px solid var(--blue); outline-offset: 5px; }
+.faq-section details p { margin-top: 12px; padding-left: 16px; }
+.no-script-notice { padding: 14px 18px; color: #3e536b; background: #e9effd; border: 1px solid #d3def6; border-radius: 8px; font-size: 14px; line-height: 1.8; }
 .site-footer { min-height: 82px; display: flex; justify-content: space-between; align-items: center; gap: 10px; color: #a0aabd; font-size: 9px; }
 .site-footer > span:first-child { font-family: var(--mono); }
 .footer-dot { margin: 0 9px; color: #bec6d6; }
@@ -198,6 +228,12 @@ kbd { font-family: inherit; font-size: 8px; letter-spacing: .2px; color: #9ba4b6
   .metric-value { font-size: 13px; }
   .install-strip { align-items: start; padding: 19px; flex-direction: column; gap: 15px; }
   .source-link { width: 100%; justify-content: space-between; }
+  .info-section { margin: 23px 0; padding: 22px 19px; }
+  .feature-grid { grid-template-columns: 1fr; gap: 20px; }
+  .section-intro h2, .wechat-card h2 { font-size: 21px; }
+  .wechat-card { grid-template-columns: 1fr; gap: 24px; padding: 24px 20px; margin: 23px 0; }
+  .wechat-qr { justify-self: center; width: 230px; max-width: 100%; }
+  .wechat-qr img { width: 230px; }
   .workspace-note { flex-direction: column; gap: 4px; margin-bottom: 23px; }
   #app-status { text-align: left; padding-left: 15px; }
   .site-footer { align-items: start; justify-content: center; flex-direction: column; gap: 8px; padding: 20px 0; font-size: 8px; }
@@ -216,5 +252,7 @@ kbd { font-family: inherit; font-size: 8px; letter-spacing: .2px; color: #9ba4b6
   .editor-host .cm-editor { font-size: 10px; }
   .error-panel { flex-wrap: wrap; }
   .button-error-location { margin-left: 28px; }
+  .getting-started { padding: 15px; }
+  .wechat-actions { gap: 16px; }
 }
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { transition: none !important; scroll-behavior: auto !important; } }

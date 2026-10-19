@@ -60,3 +60,24 @@ The Playwright configuration builds the demo and starts its own preview server a
 The configured project base is `/script-vm-next/`. Renaming the repository, deploying to a user-root site, or adding a custom domain can require changing the Vite base and updating the browser test URL. Rebuild and rerun the browser suite after such a change.
 
 The default `main` deployment can include changes newer than the latest npm package. The page's source commit identifies what it runs. To keep a demonstration aligned with a release, deploy that release's exact commit and verify the displayed version/commit afterward.
+
+## Search and AI discovery
+
+The public landing page contains its project description, usage steps, frequently asked questions, compatibility limits, and documentation links in the initial HTML. Search crawlers and readers do not need to initialize the editor or execute user code to read that information. Its canonical URL is `https://momeak9.github.io/script-vm-next/`; the page also supplies social-sharing metadata and structured data that describe the visible application and its limits.
+
+The static build includes two discovery files under the same project base:
+
+- [`sitemap.xml`](https://momeak9.github.io/script-vm-next/sitemap.xml) lists the canonical public landing page. It excludes URL fragments, the internal execution runner, and invented modification dates.
+- [`llms.txt`](https://momeak9.github.io/script-vm-next/llms.txt) summarizes the project and points to the source documentation, compatibility matrix, and release status. It is an optional discovery convention, not a standardized guarantee that an AI service will read or cite the project.
+
+The internal `runner.html` carries a `noindex, nofollow, noarchive` robots meta tag. It is an execution implementation detail rather than a separate public tool page. GitHub project Pages lives below `/script-vm-next/`, while crawlers discover robots policy at the origin's `/robots.txt`. A file at `/script-vm-next/robots.txt` cannot set that origin policy, so the project does not publish one or claim to control `https://momeak9.github.io/robots.txt`. If the site moves to a dedicated domain, configure its root robots policy there and reference the sitemap's new absolute URL.
+
+Keep the canonical URL, Open Graph URLs, structured data, sitemap, and `llms.txt` links aligned when changing the domain, repository name, public description, or release status. Discovery metadata describes the same visible content as the page; it must not claim complete JavaScript conformance, a published npm package, or isolation in downloaded output. These changes improve access to accurate information; they do not guarantee search ranking, indexing, or AI citations.
+
+The social-sharing image is `demo/public/images/social-preview.png` (1200 × 630); its editable SVG source is alongside it. When updating the artwork, render the SVG at its original dimensions and replace the PNG too, because social platforms vary in their SVG preview support. The page favicon is served from `demo/public/favicon.svg`.
+
+## WeChat follow card
+
+The landing page displays a public-account QR code with a text explanation and a direct image link for saving or opening it on a phone. The image is hosted with the static application at `images/wechat-qrcode.jpg`; showing the card does not contact WeChat, add analytics, upload source code, or alter the execution runner's isolation policy. Following the account is optional and is not required to compile or run a program.
+
+When replacing the QR code, update the source asset at `demo/public/images/wechat-qrcode.jpg`, preserve its readable quiet zone, and confirm the account destination by scanning the resulting production image. Rebuild and check both mobile and desktop layouts. The card and discovery changes become public through the existing Pages workflow after the MR is merged to `main`; opening the MR alone does not deploy them.
