@@ -1,0 +1,38 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="630" viewBox="0 0 1200 630">
+  <title>script-vm-next — JavaScript bytecode compiler and browser playground</title>
+  <rect width="1200" height="630" fill="#f4f6fb"/>
+  <circle cx="1120" cy="40" r="230" fill="#e9edff"/>
+  <circle cx="1190" cy="630" r="195" fill="#e3f2ed"/>
+  <g font-family="Arial, Helvetica, sans-serif">
+    <rect x="60" y="42" width="42" height="42" rx="11" fill="none" stroke="#25314b" stroke-width="2"/>
+    <text x="67" y="70" font-family="monospace" font-size="21" fill="#25314b">vm</text>
+    <rect x="94" y="76" width="10" height="10" rx="3" fill="#ee916f" stroke="#f4f6fb" stroke-width="2"/>
+    <text x="118" y="71" font-family="monospace" font-size="24" fill="#25314b">script-vm-next</text>
+    <text x="60" y="142" font-size="13" letter-spacing="3" fill="#687ba1">JAVASCRIPT VIRTUALIZATION / PLAYGROUND</text>
+    <text x="60" y="213" font-size="52" font-weight="700" letter-spacing="-2" fill="#25314b">JavaScript to bytecode.</text>
+    <text x="60" y="275" font-size="46" font-weight="700" letter-spacing="-1.5" fill="#4666ec">A VM built for your code.</text>
+    <text x="62" y="328" font-size="22" fill="#59677d">Compile locally in your browser.</text>
+    <text x="62" y="363" font-size="20" fill="#59677d">Inspect, run and download self-contained output.</text>
+    <rect x="60" y="407" width="172" height="43" rx="10" fill="#ffefe4" stroke="#f4e2d1"/>
+    <text x="88" y="435" font-size="17" fill="#8c6137">JavaScript</text>
+    <text x="248" y="435" font-size="23" fill="#9baac4">→</text>
+    <rect x="280" y="407" width="158" height="43" rx="10" fill="#e9edff" stroke="#dce2fb"/>
+    <text x="316" y="435" font-size="17" fill="#5268b9">Bytecode</text>
+    <text x="454" y="435" font-size="23" fill="#9baac4">→</text>
+    <rect x="486" y="407" width="181" height="43" rx="10" fill="#e3f2ed" stroke="#d4e8e0"/>
+    <text x="510" y="435" font-size="17" fill="#417b62">On-demand VM</text>
+    <rect x="756" y="157" width="384" height="295" rx="18" fill="#1b2438"/>
+    <circle cx="782" cy="182" r="5" fill="#ee916f"/>
+    <circle cx="800" cy="182" r="5" fill="#e9cd88"/>
+    <circle cx="818" cy="182" r="5" fill="#7cb89b"/>
+    <text x="846" y="187" font-family="monospace" font-size="14" fill="#a6b5d1">example.js</text>
+    <text x="781" y="242" font-family="monospace" font-size="21" fill="#dbe4f5">console.log(<tspan fill="#b9d8b8">"hello"</tspan>);</text>
+    <text x="782" y="292" font-size="15" fill="#a6b5d1">↓ Compile</text>
+    <rect x="780" y="313" width="336" height="58" rx="9" fill="#283750" stroke="#425474"/>
+    <text x="796" y="348" font-size="17" fill="#cbd9f5">Bytecode + tailored runtime</text>
+    <text x="782" y="412" font-size="14" fill="#a6b5d1">Self-contained JavaScript IIFE</text>
+    <path d="M60 518H1140" stroke="#dce2ed"/>
+    <text x="60" y="565" font-family="monospace" font-size="19" fill="#52658b">momeak9.github.io/script-vm-next/</text>
+    <text x="807" y="565" font-size="16" fill="#687b91">Explore the supported JavaScript subset.</text>
+  </g>
+</svg>

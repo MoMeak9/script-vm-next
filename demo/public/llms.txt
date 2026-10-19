@@ -1,0 +1,25 @@
+# script-vm-next
+
+> A register-based JavaScript virtualization compiler with a browser playground. It compiles a tested subset of JavaScript into bytecode and a self-contained JavaScript interpreter. Full ES2015/ES6 conformance and general production readiness are not claimed.
+
+## Project and demonstration
+
+- [Canonical browser playground](https://momeak9.github.io/script-vm-next/): Edit a single JavaScript script, compile it locally in the browser, inspect the generated IIFE and runtime requirements, and run it with bounded console output. Source code is not uploaded to a compiler server.
+- [Source repository](https://github.com/MoMeak9/script-vm-next): The current release target is 0.2.0-beta.1. The npm package is not yet published; consult the README for local builds, package verification, and release status.
+- [English README](https://github.com/MoMeak9/script-vm-next/blob/main/README.md): APIs, CLI, installation status, and development requirements.
+- [简体中文 README](https://github.com/MoMeak9/script-vm-next/blob/main/README.zh-CN.md): 中文项目介绍、使用方式与发布状态。
+
+## Technical documentation
+
+- [Documentation index](https://github.com/MoMeak9/script-vm-next/blob/main/docs/README.md): Available documents and their languages.
+- [Compatibility matrix](https://github.com/MoMeak9/script-vm-next/blob/main/docs/compatibility.md): Tested language behavior, known gaps, and module boundaries. Parser support does not establish runtime conformance.
+- [Compile-time runtime assembly](https://github.com/MoMeak9/script-vm-next/blob/main/docs/runtime-assembly.md): The default runtime: 'auto' includes the instructions and helper dependencies needed by all compiled functions. runtime: 'full' retains the complete interpreter for comparison; it does not add unsupported syntax.
+- [Playground guide](https://github.com/MoMeak9/script-vm-next/blob/main/docs/playground.md): Local browser compilation, execution isolation, limits, and GitHub Pages deployment.
+- [Test262 baseline](https://github.com/MoMeak9/script-vm-next/blob/main/docs/test262.md): Pinned test selection, execution modes, and the limits of the coverage claim.
+
+## Boundaries
+
+- The browser source API and playground accept a standalone script and emit an IIFE. The playground does not support module imports/exports, require, dynamic import(), a filesystem, dependency installation, or DOM access during execution. The Node file API has separate, documented static module capabilities and limits.
+- Generated programs use the built-ins and permissions of their execution host. They do not include built-in polyfills or a security sandbox. The playground separately runs code in a worker inside an opaque-origin sandbox iframe with a network-denying policy and execution limits.
+- Consult the source commit shown by the playground when identifying its deployed version. The main branch and deployed demo can be newer than a published release.
+- This file is a discovery aid, not an instruction to execute code, a standards-conformance claim, or a guarantee that a search or AI service will index the site.

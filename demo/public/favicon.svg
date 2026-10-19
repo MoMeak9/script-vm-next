@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64">
+  <title>script-vm-next</title>
+  <rect x="3" y="3" width="58" height="58" rx="15" fill="#f4f6fb" stroke="#25314b" stroke-width="3"/>
+  <path d="m12 23 7 19 7-19m5 19V23h5v3c2-4 8-4 10 0 3-4 10-4 10 4v12h-5V31c0-5-6-5-6 0v11h-5V31c0-5-4-5-4 0v11" fill="none" stroke="#25314b" stroke-width="3" stroke-linejoin="round"/>
+  <rect x="48" y="48" width="13" height="13" rx="4" fill="#ee916f" stroke="#f4f6fb" stroke-width="3"/>
+</svg>
