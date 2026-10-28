@@ -1,0 +1,8 @@
+{
+  "name": "script-vm-order-pricing-example",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "verify": "node verify.mjs"
+  }
+}

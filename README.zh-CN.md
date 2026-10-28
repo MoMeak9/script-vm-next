@@ -16,7 +16,7 @@
 
 ## 安装
 
-npm 包目前**尚未发布**，发布需要版权持有人确定许可证，并配置 npm 发布权限。待 `beta` 标签可用后，可通过以下命令安装：
+npm 包目前**尚未发布**，项目已采用 Apache-2.0，发布仍需配置 npm 发布权限并完成发布验收。待 `beta` 标签可用后，可通过以下命令安装：
 
 ```sh
 npm install script-vm-next@beta
@@ -130,6 +130,12 @@ pnpm demo:preview
 
 [CI 工作流](.github/workflows/ci.yml) 在 Node.js 20、22、24 上验证编译器；Node.js 24 还会运行 lint、类型检查、独立安装包验收和浏览器测试。Pages 与 npm 发布工作流使用相同的验收门槛，并部署该次验收产出的文件。剩余维护者配置和发布步骤见[发布指南（英文）](docs/releasing.md)。
 
+## 集成案例与外部反馈
+
+[订单计价集成参考案例](examples/order-pricing/README.md)展示独立项目安装 tarball 后，通过文件 API 和 CLI 验证业务模块的完整流程。浏览器接入可参考项目自身的 [Playground](docs/playground.md)。这些案例是仓库内验证，目前尚未收录经核实的外部生产采用。
+
+Apache-2.0 授权已补齐，接下来按“Beta 发布与干净安装验证 → 真实项目试用 → 公开可复现反馈”的顺序推进。报告接入结果请使用 [Beta 集成反馈](https://github.com/MoMeak9/script-vm-next/issues/new/choose)；证据范围、反馈要求与案例收录规则见[集成与反馈说明](docs/integrations.md)。
+
 ## 架构与后续工作
 
 源代码 → 可选的 Node 模块打包 → Babel 解析与规范化 → 寄存器式 IR → 字节码与运行时需求 → 编译期按需组装运行时 → 输出包装。
@@ -138,4 +144,4 @@ pnpm demo:preview
 
 ## 许可证
 
-目前包标记为 `UNLICENSED`，等待版权持有人确定许可证。在选定许可证并提供 `LICENSE` 文件前，发布工作流会阻止 npm 发布。
+项目采用 [Apache-2.0](LICENSE)，归属说明见 [NOTICE](NOTICE)。第三方代码保留各自许可证，包括 [Test262 测试集](vendor/test262/LICENSE)。

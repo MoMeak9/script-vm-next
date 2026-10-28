@@ -64,6 +64,10 @@ try {
   assert.equal(tarball.name, manifest.name)
   assert.equal(tarball.version, manifest.version)
   assert.ok(tarball.files.some(({ path: name }) => name === 'package.json'))
+  assert.equal(manifest.license, 'Apache-2.0')
+  for (const name of ['LICENSE', 'NOTICE']) {
+    assert.ok(tarball.files.some(({ path: file }) => file === name), `${name} must ship`)
+  }
   assert.ok(tarball.files.some(({ path: name }) => name === manifest.bin['script-vm-next']))
   for (const { path: name } of tarball.files) {
     assert.doesNotMatch(name, /(?:^|\/)(?:__tests__|tests?|fixtures|demo|\.github|node_modules)(?:\/|$)/,
@@ -80,6 +84,13 @@ try {
     'install', tarballPath, '--omit=dev', '--ignore-scripts', '--no-audit', '--no-fund',
     '--registry=https://registry.npmjs.org',
   ])
+  const installedPackage = path.join(consumer, 'node_modules', manifest.name)
+  const installedManifest = JSON.parse(await readFile(path.join(installedPackage, 'package.json'), 'utf8'))
+  assert.equal(installedManifest.license, 'Apache-2.0')
+  for (const name of ['LICENSE', 'NOTICE']) {
+    assert.equal(await readFile(path.join(installedPackage, name), 'utf8'),
+      await readFile(path.join(repository, name), 'utf8'), `${name} must remain intact`)
+  }
 
   const source = [
     'globalThis.__packageResult = 6 * 7;',
@@ -226,6 +237,13 @@ try {
   await run(cli, ['cli-input.js', '--output', 'cli-output.cjs', '--format', 'iife'])
   const execution = await run(process.execPath, ['cli-output.cjs'])
   assert.equal(execution.stdout.trim(), 'package-cli-ok')
+
+  console.log('[package] Verifying the order-pricing reference against the installed tarball.')
+  for (const name of ['pricing.mjs', 'cli-entry.mjs', 'verify.mjs']) {
+    await copyFile(path.join(repository, 'examples', 'order-pricing', name), path.join(consumer, name))
+  }
+  const integration = await run(process.execPath, ['verify.mjs'])
+  console.log(integration.stdout.trim())
 
   const artifactDirectory = path.join(repository, 'artifacts')
   await mkdir(artifactDirectory, { recursive: true })

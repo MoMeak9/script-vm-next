@@ -5,7 +5,7 @@ The release target for this milestone is `0.2.0-beta.1`. Package validation, bro
 ## Maintainer prerequisites
 
 1. Confirm the package name and publishing rights on npm. The workflow targets the public package `script-vm-next` on `https://registry.npmjs.org`.
-2. Select the project's license, add the complete `LICENSE` text, and update `package.json` from `UNLICENSED`. This is a copyright-holder decision. The workflow intentionally refuses to publish while the decision is pending.
+2. The project uses **Apache-2.0** as selected by the maintainer. Keep the full `LICENSE`, attribution `NOTICE`, and matching `package.json` license in the verified tarball. Preserve third-party notices and licenses.
 3. Create a GitHub Actions environment named **`npm`** under repository Settings → Environments. Restrict it to release tags and, if appropriate for your project, require a maintainer review. The workflow's `environment: npm` must match the npm Trusted Publisher settings exactly.
 4. Configure an npm **Trusted Publisher** for the package: provider **GitHub Actions**, owner **`MoMeak9`**, repository **`script-vm-next`**, workflow filename **`release.yml`**, and environment **`npm`**. These identifiers are case-sensitive where enforced by the service. Use the workflow filename, not its display name or a filesystem path.
 5. Ensure Actions can run in the repository and that the chosen ref contains the release workflow. OIDC publication runs on GitHub-hosted Ubuntu runners with `id-token: write` and npm **11.5.1 or newer**.
@@ -24,7 +24,7 @@ On a trusted maintainer machine, check out the reviewed release commit and run a
 npm publish artifacts/script-vm-next-0.2.0-beta.1.tgz --access public --tag beta --ignore-scripts --registry=https://registry.npmjs.org
 ```
 
-Do this only after the license decision is complete and the manifest and tarball contain that license. The local initial-publication path does not create a GitHub Actions provenance attestation; subsequent releases use the OIDC workflow with provenance. Configure the Trusted Publisher immediately after the initial package exists. An already published version cannot be published again; the next automated release needs a new version, such as `0.2.0-beta.2`.
+Do this only after verifying the manifest and tarball contain the Apache-2.0 license and NOTICE. The local initial-publication path does not create a GitHub Actions provenance attestation; subsequent releases use the OIDC workflow with provenance. Configure the Trusted Publisher immediately after the initial package exists. An already published version cannot be published again; the next automated release needs a new version, such as `0.2.0-beta.2`.
 
 If a Trusted Publisher can already be configured for the package, use the automated workflow directly instead of the bootstrap path. This setup does not request or create registry credentials automatically.
 
@@ -37,7 +37,8 @@ pnpm install --frozen-lockfile --ignore-scripts --registry=https://registry.npmj
 pnpm build
 pnpm lint
 pnpm typecheck
-pnpm test:unit
+pnpm test:unit:runtimes
+pnpm test:test262
 pnpm test:package
 pnpm exec playwright install --with-deps chromium
 pnpm test:e2e
@@ -66,6 +67,8 @@ npm dist-tag ls script-vm-next --registry=https://registry.npmjs.org
 ```
 
 Inspect provenance on the package's npm page and test a fresh consumer installation. Preserve the release tag and workflow run so consumers can trace the artifact to its source commit.
+
+After publication, run the [independent order-pricing integration reference](../examples/order-pricing/README.md) with the exact registry version, recording the environment and result. Collect real-project trials through the Beta integration issue template and follow the [evidence and attribution rules](integrations.md) before documenting external adoption. Repository tests and internal examples do not establish external production use.
 
 ## GitHub Pages releases
 

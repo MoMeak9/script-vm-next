@@ -32,6 +32,7 @@
     "README.md",
     "README.zh-CN.md",
     "LICENSE",
+    "NOTICE",
     "docs/compatibility.md",
     "docs/runtime-assembly.md"
   ],
@@ -65,7 +66,7 @@
     "globals": "17.13.0"
   },
   "module": "./dist/index.mjs",
-  "license": "UNLICENSED",
+  "license": "Apache-2.0",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/MoMeak9/script-vm-next.git"
