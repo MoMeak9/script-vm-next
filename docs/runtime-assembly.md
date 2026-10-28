@@ -7,8 +7,8 @@ This happens inside the compiler. Consumers pass ordinary JavaScript without a B
 ## Selecting a mode
 
 ```ts
-import { compileSource } from 'script-vm-next/core'
-import { compile, transform } from 'script-vm-next'
+import { compileSource } from '@momeak/script-vm-next/core'
+import { compile, transform } from '@momeak/script-vm-next'
 
 const output = compileSource('console.log("hello")') // runtime: 'auto'
 const full = compileSource('console.log("hello")', { runtime: 'full' })

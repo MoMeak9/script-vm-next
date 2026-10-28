@@ -5,11 +5,11 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { compile } from 'script-vm-next';
+import { compile } from '@momeak/script-vm-next';
 import { priceOrder as nativePriceOrder } from './pricing.mjs';
 
 const require = createRequire(import.meta.url);
-const manifestPath = require.resolve('script-vm-next/package.json');
+const manifestPath = require.resolve('@momeak/script-vm-next/package.json');
 const manifest = require(manifestPath);
 const cli = fileURLToPath(new URL(manifest.bin['script-vm-next'], pathToFileURL(manifestPath)));
 const input = fileURLToPath(new URL('./pricing.mjs', import.meta.url));
@@ -57,7 +57,7 @@ try {
     assert.deepEqual(JSON.parse(result), cases[1][1]);
     console.log(`${runtime}/CLI: bundled local module execution passed`);
   }
-  console.log(`Verified installed script-vm-next@${manifest.version} on Node.js ${process.versions.node}`);
+  console.log(`Verified installed @momeak/script-vm-next@${manifest.version} on Node.js ${process.versions.node}`);
 } finally {
   await rm(temporary, { recursive: true, force: true });
 }

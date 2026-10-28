@@ -3,7 +3,7 @@
 > Register-based JavaScript virtualization tool that compiles JavaScript into custom bytecode and emits pure JavaScript with an embedded runtime interpreter.
 
 **Version:** 0.1.0
-**Package:** `script-vm-next`
+**Package:** `@momeak/script-vm-next`
 **Runtime:** Node.js ≥20
 **Package Manager:** pnpm
 
@@ -418,7 +418,7 @@ script-vm-next input.js --debug
 ## API Usage
 
 ```typescript
-import { compile, transform, resolveFormat } from 'script-vm-next';
+import { compile, transform, resolveFormat } from '@momeak/script-vm-next';
 
 // Full compilation with options
 const result = compile('path/to/input.js', {

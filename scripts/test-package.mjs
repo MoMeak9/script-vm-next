@@ -137,15 +137,15 @@ try {
   await writeFile(path.join(consumer, 'consumer.cjs'), `
     const assert = require('node:assert/strict');
     const { runInNewContext } = require('node:vm');
-    const root = require('script-vm-next');
-    const core = require('script-vm-next/core');
+    const root = require('@momeak/script-vm-next');
+    const core = require('@momeak/script-vm-next/core');
     ${smokeAssertions}
   `)
   await writeFile(path.join(consumer, 'consumer.mjs'), `
     import assert from 'node:assert/strict';
     import { runInNewContext } from 'node:vm';
-    import { compile, transform, resolveFormat, compileSource, CompileError, VERSION } from 'script-vm-next';
-    import { compileSource as coreCompileSource, CompileError as CoreCompileError } from 'script-vm-next/core';
+    import { compile, transform, resolveFormat, compileSource, CompileError, VERSION } from '@momeak/script-vm-next';
+    import { compileSource as coreCompileSource, CompileError as CoreCompileError } from '@momeak/script-vm-next/core';
     const root = { compile, transform, resolveFormat, compileSource, CompileError, VERSION };
     const core = { compileSource: coreCompileSource, CompileError: CoreCompileError };
     ${smokeAssertions}
@@ -169,7 +169,7 @@ try {
   await writeFile(path.join(consumer, 'static-consumer.mjs'), `
     import assert from 'node:assert/strict';
     import { writeFileSync, rmSync } from 'node:fs';
-    import { transform } from 'script-vm-next';
+    import { transform } from '@momeak/script-vm-next';
     const code = transform('static-entry.mjs', { format: 'esm' });
     writeFileSync('static-output.mjs', code);
     rmSync('node_modules/scriptvm-fixture-state', { recursive: true });
@@ -204,17 +204,17 @@ try {
     const invalidCode: number = sourceResult.code;
   `
   await writeFile(path.join(consumer, 'consumer.mts'), `
-    import * as root from 'script-vm-next';
-    import * as core from 'script-vm-next/core';
-    import type { CompileOptions, CompiledOutput } from 'script-vm-next';
-    import type { CompileSourceOptions } from 'script-vm-next/core';
+    import * as root from '@momeak/script-vm-next';
+    import * as core from '@momeak/script-vm-next/core';
+    import type { CompileOptions, CompiledOutput } from '@momeak/script-vm-next';
+    import type { CompileSourceOptions } from '@momeak/script-vm-next/core';
     ${typedAssertions}
   `)
   await writeFile(path.join(consumer, 'consumer.cts'), `
-    import root = require('script-vm-next');
-    import core = require('script-vm-next/core');
-    import type { CompileOptions, CompiledOutput } from 'script-vm-next';
-    import type { CompileSourceOptions } from 'script-vm-next/core';
+    import root = require('@momeak/script-vm-next');
+    import core = require('@momeak/script-vm-next/core');
+    import type { CompileOptions, CompiledOutput } from '@momeak/script-vm-next';
+    import type { CompileSourceOptions } from '@momeak/script-vm-next/core';
     ${typedAssertions}
   `)
   await writeFile(path.join(consumer, 'tsconfig.json'), JSON.stringify({

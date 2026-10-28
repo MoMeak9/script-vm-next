@@ -4,6 +4,10 @@ import { fileURLToPath } from 'node:url'
 const root = new URL('../', import.meta.url)
 const pkg = JSON.parse(await readFile(new URL('package.json', root), 'utf8'))
 const version = await readFile(new URL('src/version.ts', root), 'utf8')
+if (pkg.name !== '@momeak/script-vm-next' || pkg.publishConfig?.access !== 'public' ||
+    pkg.publishConfig?.registry !== 'https://registry.npmjs.org/') {
+  throw new Error('Release must target the public @momeak/script-vm-next package on npmjs.org')
+}
 if (!/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(pkg.version)) throw new Error('Invalid release version')
 if (version.match(/export const VERSION = ['"]([^'"]+)['"]/)?.[1] !== pkg.version) {
   throw new Error('package.json and src/version.ts versions must match')
@@ -12,6 +16,7 @@ if (pkg.private || !pkg.license || pkg.license === 'UNLICENSED') {
   throw new Error('Choose and approve the project license before publishing to npm')
 }
 await access(fileURLToPath(new URL('LICENSE', root)))
+await access(fileURLToPath(new URL('NOTICE', root)))
 if (!pkg.repository?.url || !pkg.exports?.['.'] || !pkg.exports?.['./core']) {
   throw new Error('Release requires repository metadata and both public entry points')
 }

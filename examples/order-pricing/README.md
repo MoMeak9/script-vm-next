@@ -11,13 +11,13 @@ pnpm build
 pnpm test:package
 consumer=$(mktemp -d)
 cp examples/order-pricing/* "$consumer/"
-npm install --prefix "$consumer" "$PWD/artifacts/script-vm-next-0.2.0-beta.1.tgz" --no-save --package-lock=false --ignore-scripts --registry=https://registry.npmjs.org
+npm install --prefix "$consumer" "$PWD/artifacts/momeak-script-vm-next-0.2.0-beta.1.tgz" --no-save --package-lock=false --ignore-scripts --registry=https://registry.npmjs.org
 npm --prefix "$consumer" run verify
 # 检查完结果后清理独立消费者目录：
 rm -rf "$consumer"
 ```
 
-升级版本后，请将 tarball 文件名替换为 `test:package` 输出的实际路径。Beta 发布后，也可在该独立目录安装一个**明确版本**，例如 `script-vm-next@0.2.0-beta.1`；只有确认 npm 上存在该版本后才使用注册表安装。
+升级版本后，请将 tarball 文件名替换为 `test:package` 输出的实际路径。Beta 发布后，也可在该独立目录安装一个**明确版本**，例如 `@momeak/script-vm-next@0.2.0-beta.1`；只有确认 npm 上存在该版本后才使用注册表安装。
 
 ## 验收内容
 
