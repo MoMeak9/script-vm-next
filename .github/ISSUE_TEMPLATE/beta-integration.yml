@@ -1,0 +1,46 @@
+name: Beta 集成反馈
+description: 报告真实接入中的结果、兼容性问题与性能观察（请先脱敏）
+title: "[Beta integration] "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        感谢试用。请勿提交密钥、客户数据或无权公开的源码。成功和失败的接入结果都可以反馈。
+  - type: textarea
+    id: environment
+    attributes:
+      label: 版本与环境
+      description: 包确切版本、npm/tarball/提交来源、Node/浏览器/OS、打包工具版本。
+    validations:
+      required: true
+  - type: textarea
+    id: integration
+    attributes:
+      label: 接入方式与场景
+      description: API 或 CLI、入口、format、runtime、bundle/external 配置，以及输入规模；项目链接可选。
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: 可复现步骤
+      description: 最小脱敏代码、安装及执行命令；成功案例也请附可重复的验证方式。
+    validations:
+      required: true
+  - type: textarea
+    id: result
+    attributes:
+      label: 预期、实际结果与限制
+      description: 原生执行基线、VM 输出或错误、已通过和失败的检查；性能数据请附单位、测量方法与重复次数。
+    validations:
+      required: true
+  - type: dropdown
+    id: attribution
+    attributes:
+      label: 文档引用许可
+      description: 未取得明确许可前，不会将反馈中的项目名称或评价收录为采用案例。
+      options:
+        - 仅用于排查，不授权在案例文档中引用项目名称或评价
+        - 可链接此 issue；引用项目名称或评价前请另行确认具体文字
+    validations:
+      required: true

@@ -17,10 +17,11 @@ Choose a document by topic and language below. The project README is available i
 | [Test262 baseline / Test262 基线](test262.md) | English | Pinned upstream tests, runner, scope and known exclusions / 固定上游版本、执行器、范围与已知排除项 |
 | [Browser playground / 浏览器演示页](playground.md) | English | Usage, execution isolation, Pages deployment / 使用、执行隔离、Pages 部署 |
 | [Release guide / 发布指南](releasing.md) | English | Package validation, license and npm publishing setup / 安装包验收、许可证与 npm 发布配置 |
+| [集成与外部反馈 / Integrations and feedback](integrations.md) | 简体中文 | 可复现案例、证据范围、Beta 反馈与案例收录规则 |
 
-The playground is deployed through GitHub Actions to GitHub Pages. npm publication remains pending the license decision and publishing access. For supported language features, compatibility handling is part of the compiler and runtime; consumers do not need to configure Babel or rewrite their JavaScript. The compatibility matrix records the remaining limits.
+The playground is deployed through GitHub Actions to GitHub Pages. The project uses Apache-2.0; npm publication still requires publishing access and release validation. For supported language features, compatibility handling is part of the compiler and runtime; consumers do not need to configure Babel or rewrite their JavaScript. The compatibility matrix records the remaining limits.
 
-演示页已通过 GitHub Actions 部署到 GitHub Pages。npm 发布仍需确定许可证并配置发布权限。已支持语言功能的兼容处理由编译器和运行时承担，使用方无需配置 Babel 或改写 JavaScript；剩余边界见兼容性矩阵。
+演示页已通过 GitHub Actions 部署到 GitHub Pages。项目已采用 Apache-2.0；npm 发布仍需配置发布权限并完成发布验收。已支持语言功能的兼容处理由编译器和运行时承担，使用方无需配置 Babel 或改写 JavaScript；剩余边界见兼容性矩阵。
 
 ## Architecture tutorials / 架构教程
 

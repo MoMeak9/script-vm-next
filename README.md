@@ -16,7 +16,7 @@ See [playground usage and deployment](docs/playground.md) for the execution mode
 
 ## Installation
 
-The npm package has **not been published yet**. Registry publication requires the copyright holder's license decision and npm publishing access. Once the `beta` dist-tag is available:
+The npm package has **not been published yet**. The project is licensed under Apache-2.0; registry publication still requires npm publishing access and release validation. Once the `beta` dist-tag is available:
 
 ```sh
 npm install script-vm-next@beta
@@ -130,6 +130,12 @@ pnpm demo:preview
 
 The [CI workflow](.github/workflows/ci.yml) tests the compiler on Node.js 20, 22, and 24. Node.js 24 additionally runs lint, type checks, independent package consumers, and browser checks. Pages and npm release workflows require these same gates and deploy the artifacts produced by that validation run. See the [release guide](docs/releasing.md) for the remaining maintainer configuration and release process.
 
+## Integrations and external feedback
+
+The [order-pricing integration reference](examples/order-pricing/README.md) (Simplified Chinese) installs a tarball into an independent consumer and checks a business module through the file API and CLI. The [playground](docs/playground.md) is the project's own browser integration. These are repository-maintained examples; no verified external production adoption is currently documented.
+
+Apache-2.0 licensing is in place. The next milestones are a verified Beta publication and real-project trials with reproducible feedback. Use the [Beta integration feedback template](https://github.com/MoMeak9/script-vm-next/issues/new/choose) to report results. See [integration evidence and feedback](docs/integrations.md) (Simplified Chinese) for scope and case-study requirements.
+
 ## Architecture and next work
 
 Source → optional Node module bundling → Babel parsing and normalization → register-based IR → bytecode and runtime requirements → compile-time runtime assembly → output wrapping.
@@ -138,4 +144,4 @@ Start with the [documentation index](docs/README.md), which labels each document
 
 ## License
 
-The package is currently marked `UNLICENSED` pending the copyright holder's license decision. The release workflow blocks npm publication until a license is selected and a `LICENSE` file is included.
+Licensed under [Apache-2.0](LICENSE); see [NOTICE](NOTICE) for attribution. Third-party code retains its own license, including the [vendored Test262 corpus](vendor/test262/LICENSE).

@@ -1,0 +1,6 @@
+script-vm-next
+Copyright 2026 script-vm-next contributors
+
+This project is licensed under the Apache License, Version 2.0.
+Third-party components retain their respective licenses and notices.
+The vendored Test262 corpus is distributed under vendor/test262/LICENSE.
