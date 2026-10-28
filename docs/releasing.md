@@ -4,7 +4,7 @@ The release target for this milestone is `0.2.0-beta.1`. Package validation, bro
 
 ## Maintainer prerequisites
 
-1. Confirm the package name and publishing rights on npm. The workflow targets the public package `script-vm-next` on `https://registry.npmjs.org`.
+1. Confirm ownership or publish rights for the npm **`@momeak`** user/organization scope. A matching GitHub name does not grant npm scope access. If it is an organization, the publisher needs write access through an authorized team. Scoped packages default to private on npm, so this project explicitly sets `publishConfig.access: public` and publishes with `--access public`. The workflow targets the public package `@momeak/script-vm-next` on `https://registry.npmjs.org`.
 2. The project uses **Apache-2.0** as selected by the maintainer. Keep the full `LICENSE`, attribution `NOTICE`, and matching `package.json` license in the verified tarball. Preserve third-party notices and licenses.
 3. Create a GitHub Actions environment named **`npm`** under repository Settings → Environments. Restrict it to release tags and, if appropriate for your project, require a maintainer review. The workflow's `environment: npm` must match the npm Trusted Publisher settings exactly.
 4. Configure an npm **Trusted Publisher** for the package: provider **GitHub Actions**, owner **`MoMeak9`**, repository **`script-vm-next`**, workflow filename **`release.yml`**, and environment **`npm`**. These identifiers are case-sensitive where enforced by the service. Use the workflow filename, not its display name or a filesystem path.
@@ -16,17 +16,30 @@ The package's `repository` URL must match the GitHub repository. Public npm publ
 
 ## First publication when the package does not yet exist
 
-npm Trusted Publisher configuration is normally attached to an existing package. If the package does not yet exist and npm does not offer its publisher configuration, an authorized maintainer must establish the initial package using npm's secure authentication before switching subsequent versions to OIDC.
+npm Trusted Publisher configuration is normally attached to an existing package. If `@momeak/script-vm-next` does not yet exist and npm does not offer its publisher configuration, use the explicit one-time bootstrap mode:
 
-On a trusted maintainer machine, check out the reviewed release commit and run all validation commands below. Log in interactively with `npm login --registry=https://registry.npmjs.org`, complete the account's required two-factor authentication, then publish the **verified tarball**, for example:
+1. Merge the scoped publishing changes into `main`. Confirm the release commit passed CI and that `package.json` and `src/version.ts` both contain `0.2.0-beta.1`.
+2. In npm, create a short-lived **granular access token** with permission to create/publish packages under `@momeak`. If the token UI offers access to all packages in this scope, choose the narrowest scope permission that allows the initial package creation. Enable **Bypass 2FA** for noninteractive publication if required by your account policy. An organization policy that forbids such tokens requires the local authenticated bootstrap below instead.
+3. Add the token as the GitHub **environment secret** `NPM_BOOTSTRAP_TOKEN` in the repository's `npm` environment. Do not add it to the cloud environment or put its value in chat, commands or files.
+4. Create and push `v0.2.0-beta.1` on that reviewed commit. Tag pushes always use OIDC; before the package and Trusted Publisher exist, that first automatic run can fail authentication. It does not switch to a token silently. Wait for that run to finish before the manual bootstrap.
+5. Run **npm release** manually on the exact release tag, choosing `authentication: bootstrap-token`. With an authenticated GitHub CLI, the equivalent command is:
+
+   ```sh
+   gh workflow run release.yml --repo MoMeak9/script-vm-next --ref v0.2.0-beta.1 -f authentication=bootstrap-token
+   ```
+
+   A branch ref is rejected. The run repeats all reusable CI checks, publishes the verified scoped tarball with `--access public --tag beta --provenance`, and checks the registry version and dist-tag. The token is available only in this explicitly selected publish step.
+6. Once the package exists, configure its npm **Trusted Publisher** with the exact values in the prerequisites above. Revoke the bootstrap token and remove `NPM_BOOTSTRAP_TOKEN` from the GitHub environment. Subsequent matching version tags use OIDC without a long-lived token; use a new version such as `0.2.0-beta.2`, since npm versions are immutable.
+
+If a Trusted Publisher can already be configured for the package, skip the token and bootstrap dispatch; use the ordinary tag workflow. A manual rerun can use `authentication: trusted-publisher` on a matching tag whose version has not yet been published.
+
+If token bootstrap is unavailable, use a trusted maintainer machine: check out the reviewed release commit, run all validation commands below, log in with `npm login --registry=https://registry.npmjs.org`, complete account two-factor authentication, then publish the verified tarball:
 
 ```sh
-npm publish artifacts/script-vm-next-0.2.0-beta.1.tgz --access public --tag beta --ignore-scripts --registry=https://registry.npmjs.org
+npm publish ./artifacts/momeak-script-vm-next-0.2.0-beta.1.tgz --access public --tag beta --ignore-scripts --registry=https://registry.npmjs.org
 ```
 
-Do this only after verifying the manifest and tarball contain the Apache-2.0 license and NOTICE. The local initial-publication path does not create a GitHub Actions provenance attestation; subsequent releases use the OIDC workflow with provenance. Configure the Trusted Publisher immediately after the initial package exists. An already published version cannot be published again; the next automated release needs a new version, such as `0.2.0-beta.2`.
-
-If a Trusted Publisher can already be configured for the package, use the automated workflow directly instead of the bootstrap path. This setup does not request or create registry credentials automatically.
+The local fallback does not create a GitHub Actions provenance attestation. Configure Trusted Publishing immediately after the package exists. The workflow cannot create your npm account, scope permissions, token, or Trusted Publisher configuration; those account-side settings require an authorized maintainer.
 
 ## Validate a release
 
@@ -44,7 +57,7 @@ pnpm exec playwright install --with-deps chromium
 pnpm test:e2e
 ```
 
-The independent consumer check packs with lifecycle scripts disabled, checks the archive file list, installs it into a temporary production consumer, verifies named ESM and CommonJS imports, checks strict TypeScript declarations, compiles through both public entry points, and executes the installed CLI. The verified archive is saved as `artifacts/script-vm-next-<version>.tgz`.
+The independent consumer check packs with lifecycle scripts disabled, checks the archive file list, installs it into a temporary production consumer, verifies named ESM and CommonJS imports, checks strict TypeScript declarations, compiles through both public entry points, and executes the installed CLI. The verified archive is saved as `artifacts/momeak-script-vm-next-<version>.tgz`.
 
 `pnpm test:e2e` builds the production playground and tests its project-subpath deployment, compilation, execution, diagnostics, limits, stopping and recovery, and selected isolation boundaries in Chromium. Keep the compatibility document and example expectations aligned with these checks. A passing suite only establishes the cases it exercises.
 
@@ -62,8 +75,8 @@ Every prerelease version, including `0.2.0-beta.1`, is published to the **`beta`
 Verify using the exact released version:
 
 ```sh
-npm view script-vm-next@0.2.0-beta.2 version dist.integrity --registry=https://registry.npmjs.org
-npm dist-tag ls script-vm-next --registry=https://registry.npmjs.org
+npm view @momeak/script-vm-next@0.2.0-beta.2 version dist.integrity --registry=https://registry.npmjs.org
+npm dist-tag ls @momeak/script-vm-next --registry=https://registry.npmjs.org
 ```
 
 Inspect provenance on the package's npm page and test a fresh consumer installation. Preserve the release tag and workflow run so consumers can trace the artifact to its source commit.
@@ -80,6 +93,7 @@ The page displays its package version and source commit. `main` may contain unre
 
 - **License gate failed:** select the license through the copyright holder and include its text. Do not remove the gate or publish an `UNLICENSED` artifact to get a green run.
 - **Tag mismatch:** tag the commit whose manifest has the desired version; do not publish a differently versioned archive under the tag.
+- **Bootstrap authentication failed:** verify the `npm` environment secret name, token expiry, `@momeak` creation/write permissions, and any required Bypass 2FA setting. The workflow does not consume this token on ordinary tag pushes.
 - **OIDC authentication failed:** check npm's exact owner, repository, workflow filename, environment, the workflow's `id-token: write` permission, GitHub-hosted runner, npm version, and package ownership. GitHub checkout access does not establish npm publishing rights.
 - **Provenance failed:** check repository visibility, the manifest's repository URL, and npm/GitHub OIDC requirements. Preserve the provenance requirement for automated releases.
 - **Version already exists:** npm versions are immutable. Inspect the published version and bump the next release instead of repeatedly rerunning the same publish.

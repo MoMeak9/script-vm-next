@@ -5,7 +5,7 @@ imports and re-exports, including ESM-only packages. Callers do not need Babel,
 a separate bundler configuration, or source rewrites:
 
 ```js
-import { transform } from 'script-vm-next'
+import { transform } from '@momeak/script-vm-next'
 const output = transform('./entry.mjs', { format: 'esm' })
 ```
 

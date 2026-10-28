@@ -19,10 +19,12 @@ See [playground usage and deployment](docs/playground.md) for the execution mode
 The npm package has **not been published yet**. The project is licensed under Apache-2.0; registry publication still requires npm publishing access and release validation. Once the `beta` dist-tag is available:
 
 ```sh
-npm install script-vm-next@beta
+npm install @momeak/script-vm-next@beta
 ```
 
-The installed Node.js package requires Node.js 20 or newer. Repository development tools have stricter minimum versions, listed below. Browser applications should import `script-vm-next/core` through a bundler.
+The npm package is managed under the `@momeak` scope. The installed CLI command remains `script-vm-next`; repository and Pages URLs keep their existing names. Actions supports one-time bootstrap publication and subsequent token-free Trusted Publishing; see the [release setup](docs/releasing.md).
+
+The installed Node.js package requires Node.js 20 or newer. Repository development tools have stricter minimum versions, listed below. Browser applications should import `@momeak/script-vm-next/core` through a bundler.
 
 Before registry publication, build and verify a local package:
 
@@ -32,12 +34,12 @@ pnpm build
 pnpm test:package
 ```
 
-The package check installs the real tarball in a fresh consumer, checks CommonJS, named ESM imports, strict TypeScript consumers, both API entry points, and the installed CLI. It saves the verified archive under `artifacts/`; install it in another project with `npm install /absolute/path/to/script-vm-next/artifacts/script-vm-next-0.2.0-beta.1.tgz`.
+The package check installs the real tarball in a fresh consumer, checks CommonJS, named ESM imports, strict TypeScript consumers, both API entry points, and the installed CLI. It saves the verified archive under `artifacts/`; install it in another project with `npm install /absolute/path/to/script-vm-next/artifacts/momeak-script-vm-next-0.2.0-beta.1.tgz`.
 
 ## Source API: Node.js and browser bundlers
 
 ```ts
-import { compileSource, CompileError } from 'script-vm-next/core'
+import { compileSource, CompileError } from '@momeak/script-vm-next/core'
 
 try {
   const result = compileSource('console.log(6 * 7)', {
@@ -61,12 +63,12 @@ try {
 
 The default `runtime: 'auto'` assembles the interpreter at compile time from the instructions and helpers required by every compiled function. A simple `console.log` program does not carry the class, async, or generator implementations. Use `runtime: 'full'` to retain the complete interpreter when diagnosing an issue. Both modes preserve the same bytecode and supported language behavior; no source rewriting or consumer build configuration is required. See [runtime assembly](docs/runtime-assembly.md) for the dependency analysis and boundaries.
 
-CommonJS consumers can use `const { compileSource } = require('script-vm-next/core')`. Type declarations are included. The root package also re-exports `compileSource`, but browser bundlers should use the dedicated `core` entry to avoid Node filesystem dependencies.
+CommonJS consumers can use `const { compileSource } = require('@momeak/script-vm-next/core')`. Type declarations are included. The root package also re-exports `compileSource`, but browser bundlers should use the dedicated `core` entry to avoid Node filesystem dependencies.
 
 ## File API: Node.js
 
 ```ts
-import { compile, transform } from 'script-vm-next'
+import { compile, transform } from '@momeak/script-vm-next'
 
 // Read the entry file, bundle supported local modules, and write an output file.
 const result = compile('./input.js', './output.vm.js', { format: 'iife' })
@@ -85,9 +87,9 @@ The file API supports `format: 'auto' | 'iife' | 'esm' | 'cjs'`, `runtime: 'auto
 After installation:
 
 ```sh
-npx script-vm-next input.js --output output.vm.js --format iife
+npx @momeak/script-vm-next input.js --output output.vm.js --format iife
 node output.vm.js
-npx script-vm-next --help
+npx @momeak/script-vm-next --help
 ```
 
 The `transform` subcommand is also accepted. Options include `--format auto|iife|esm|cjs`, `--runtime auto|full` (default `auto`), `--no-bundle`, `--external module-a,module-b`, and `--debug`. Compilation failures return a nonzero status with a diagnostic code and a source location when available.

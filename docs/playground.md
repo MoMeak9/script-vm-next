@@ -1,6 +1,6 @@
 # Browser playground
 
-The playground is a static Vite/TypeScript application deployed by GitHub Actions to [GitHub Pages](https://momeak9.github.io/script-vm-next/). It uses the same source compiler as the npm `script-vm-next/core` entry and displays the package version and source commit for traceability.
+The playground is a static Vite/TypeScript application deployed by GitHub Actions to [GitHub Pages](https://momeak9.github.io/script-vm-next/). It uses the same source compiler as the npm `@momeak/script-vm-next/core` entry and displays the package version and source commit for traceability.
 
 ## Use it
 

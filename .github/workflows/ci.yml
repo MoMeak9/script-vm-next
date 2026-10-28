@@ -71,6 +71,7 @@ jobs:
         run: pnpm build
       - name: Lint and type check
         run: |
+          pnpm release:check
           pnpm lint
           pnpm typecheck
       - name: Test compiler with auto and full runtimes

@@ -19,10 +19,12 @@
 npm 包目前**尚未发布**，项目已采用 Apache-2.0，发布仍需配置 npm 发布权限并完成发布验收。待 `beta` 标签可用后，可通过以下命令安装：
 
 ```sh
-npm install script-vm-next@beta
+npm install @momeak/script-vm-next@beta
 ```
 
-安装后的 Node.js 包要求 Node.js 20 或更新版本。仓库开发工具的最低版本要求更高，见下文。浏览器应用应通过打包工具导入 `script-vm-next/core`。
+npm 包统一由 `@momeak` scope 管理。安装后的 CLI 命令仍为 `script-vm-next`，仓库与 Pages 地址保持现有名称。Actions 支持首次 bootstrap 发布和后续免 token 的 Trusted Publishing，账号侧配置见[发布指南](docs/releasing.md)。
+
+安装后的 Node.js 包要求 Node.js 20 或更新版本。仓库开发工具的最低版本要求更高，见下文。浏览器应用应通过打包工具导入 `@momeak/script-vm-next/core`。
 
 在 npm 发布前，可以本地构建并验证安装包：
 
@@ -32,12 +34,12 @@ pnpm build
 pnpm test:package
 ```
 
-安装包验收会在独立目录安装真实 tarball，检查 CommonJS、ESM 命名导入、严格 TypeScript 使用方、两个 API 入口以及安装后的 CLI。验收通过的压缩包保存在 `artifacts/`；其他项目可使用 `npm install /absolute/path/to/script-vm-next/artifacts/script-vm-next-0.2.0-beta.1.tgz` 安装。
+安装包验收会在独立目录安装真实 tarball，检查 CommonJS、ESM 命名导入、严格 TypeScript 使用方、两个 API 入口以及安装后的 CLI。验收通过的压缩包保存在 `artifacts/`；其他项目可使用 `npm install /absolute/path/to/script-vm-next/artifacts/momeak-script-vm-next-0.2.0-beta.1.tgz` 安装。
 
 ## 源码 API：Node.js 与浏览器打包工具
 
 ```ts
-import { compileSource, CompileError } from 'script-vm-next/core'
+import { compileSource, CompileError } from '@momeak/script-vm-next/core'
 
 try {
   const result = compileSource('console.log(6 * 7)', {
@@ -61,12 +63,12 @@ try {
 
 默认的 `runtime: 'auto'` 会在编译期分析所有已编译函数所需的指令和辅助函数，按需组装解释器。简单的 `console.log` 程序无需携带类、异步或生成器实现。排查问题时可使用 `runtime: 'full'` 保留完整解释器。两种模式使用相同字节码，并保持相同的受支持语言行为；调用方无需改写源码或配置额外构建步骤。依赖分析与边界说明见[运行时按需组装（英文）](docs/runtime-assembly.md)。
 
-CommonJS 使用方可以写 `const { compileSource } = require('script-vm-next/core')`。包中包含类型声明。根入口也导出 `compileSource`，但浏览器打包工具应使用专门的 `core` 入口，避免引入 Node 文件系统依赖。
+CommonJS 使用方可以写 `const { compileSource } = require('@momeak/script-vm-next/core')`。包中包含类型声明。根入口也导出 `compileSource`，但浏览器打包工具应使用专门的 `core` 入口，避免引入 Node 文件系统依赖。
 
 ## 文件 API：Node.js
 
 ```ts
-import { compile, transform } from 'script-vm-next'
+import { compile, transform } from '@momeak/script-vm-next'
 
 // 读取入口文件，打包受支持的本地模块，并写入输出文件。
 const result = compile('./input.js', './output.vm.js', { format: 'iife' })
@@ -85,9 +87,9 @@ const code = transform('./input.js', { format: 'iife' })
 安装后可以运行：
 
 ```sh
-npx script-vm-next input.js --output output.vm.js --format iife
+npx @momeak/script-vm-next input.js --output output.vm.js --format iife
 node output.vm.js
-npx script-vm-next --help
+npx @momeak/script-vm-next --help
 ```
 
 也支持 `transform` 子命令。选项包括 `--format auto|iife|esm|cjs`、`--runtime auto|full`（默认为 `auto`）、`--no-bundle`、`--external module-a,module-b` 和 `--debug`。编译失败时返回非零退出码，并输出诊断代码；可获取源代码位置时，也会一并报告。
